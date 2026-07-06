@@ -29,6 +29,15 @@ def generate_launch_description():
             'filter_size_map': 0.1,  # Options: 0.5, 0.3, 0.15, 0.1
             'cube_side_length': 1000.0,  # Option: 1000
             'runtime_pos_log_enable': False,  # Option: True
+            # 'odom_header_frame_id' feeds the point cloud/path frame_id too,
+            # so it must stay "odom". Do NOT set 'odom_child_frame_id' to
+            # "l2lidar_imu": Point-LIO's own tf broadcast (laserMapping.cpp,
+            # unconditional, no publish_tf-style disable flag) would then
+            # fight the static l2lidar_frame -> l2lidar_imu transform for a
+            # parent. Left at its "aft_mapped" default (unclaimed frame,
+            # harmless orphan branch) -- lio_map_odom_bridge.py below does
+            # the real odom -> base_footprint republish instead.
+            'odom_header_frame_id': 'odom',
         }
     ]
 
@@ -40,6 +49,20 @@ def generate_launch_description():
         output='screen',
         parameters=laser_mapping_params,
         # prefix='gdb -ex run --args'
+    )
+
+    # Republishes Point-LIO's odometry (odom -> aft_mapped, i.e. odom -> l2lidar_imu
+    # in physical terms) as odom -> base_footprint, reusing the same bridge
+    # FAST-LIO uses -- see FAST_LIO_ROS2/scripts/lio_map_odom_bridge.py for the
+    # full explanation of why this indirection exists.
+    odom_bridge_node = Node(
+        package='fast_lio',
+        executable='lio_map_odom_bridge.py',
+        name='lio_map_odom_bridge',
+        output='screen',
+        parameters=[{
+            'odom_topic': '/aft_mapped_to_init',
+        }],
     )
 
     # Conditional RViz node launch
@@ -59,6 +82,7 @@ def generate_launch_description():
     ld = LaunchDescription([
         rviz_arg,
         laser_mapping_node,
+        odom_bridge_node,
         GroupAction(
             actions=[rviz_node],
             condition=IfCondition(LaunchConfiguration('rviz'))

@@ -24,19 +24,19 @@
             satu_acc: 30.0 # the saturation value of IMU's acceleration. not related to the units
             satu_gyro: 35.0 # the saturation value of IMU's angular velocity. not related to the units
             acc_norm: 9.81 # 1.0 for g as unit, 9.81 for m/s^2 as unit of the IMU's acceleration
-            lidar_meas_cov: 0.01 # 0.001
+            lidar_meas_cov: 0.005 # weight lidar harder relative to the noisy IMU
             acc_cov_output: 500.0
             gyr_cov_output: 1000.0
             b_acc_cov: 0.0001
             b_gyr_cov: 0.0001
-            imu_meas_acc_cov: 0.1 #0.1 # 2
-            imu_meas_omg_cov: 0.1 #0.1 # 2
-            gyr_cov_input: 0.01 # for IMU as input model
-            acc_cov_input: 0.1 # for IMU as input model
+            imu_meas_acc_cov: 2.0 # raised from 0.1: L2 accel carries strong 13-26 Hz motor-vibration noise (same reason FAST-LIO l2.yaml uses acc_cov 2.0)
+            imu_meas_omg_cov: 0.1
+            gyr_cov_input: 0.1 # for IMU as input model (matches FAST-LIO l2.yaml gyr_cov)
+            acc_cov_input: 2.0 # for IMU as input model: L2 accel carries strong 13-26 Hz motor-vibration noise (matches FAST-LIO l2.yaml acc_cov)
             plane_thr: 0.1 # 0.05, the threshold for plane criteria, the smaller, the flatter a plane
             match_s: 81.0
             fov_degree: 180.0
-            det_range: 100.0
+            det_range: 30.0 # Unitree L2 actual max range
             gravity_align: true # true to align the z axis of world frame with the direction of gravity, and the gravity direction should be specified below
             gravity: [0.0, 0.0, -9.810] # [0.0, 9.810, 0.0] # gravity to be aligned
             gravity_init: [0.0, 0.0, -9.810] # [0.0, 9.810, 0.0] # # preknown gravity in the first IMU body frame, use when imu_en is false or start from a non-stationary state
@@ -48,7 +48,7 @@
                           0.0, 0.0, 1.0 ]
 
         odometry:
-            publish_odometry_without_downsample: true
+            publish_odometry_without_downsample: false # per-scan odometry (~11 Hz); per-point publishing (~60k msg/s) was a large share of the real-time overload
 
         publish:
             path_en: true                 # false: close the path output

@@ -19,14 +19,14 @@ def generate_launch_description():
             'config', 'l2lidar_node.yaml'
         ]),
         {
-            'use_imu_as_input': False,  # Change to True to use IMU as input of Point-LIO
+            'use_imu_as_input': True,  # input model (FAST-LIO-style propagation): more robust to the L2's vibration-heavy IMU than the output model
             'prop_at_freq_of_imu': True,
             'check_satu': True,
             'init_map_size': 10,
-            'point_filter_num': 1,  # Options: 1, 3
+            'point_filter_num': 3,  # was 1: decimate 3x so processing keeps up in real time (dropped scans made the filter diverge)
             'space_down_sample': True,
-            'filter_size_surf': 0.1,  # Options: 0.5, 0.3, 0.2, 0.15, 0.1
-            'filter_size_map': 0.1,  # Options: 0.5, 0.3, 0.15, 0.1
+            'filter_size_surf': 0.25,  # was 0.1: coarser voxel, large real-time headroom gain
+            'filter_size_map': 0.25,  # was 0.1: coarser map voxel, cheaper insertion/search
             'cube_side_length': 1000.0,  # Option: 1000
             'runtime_pos_log_enable': False,  # Option: True
             # 'odom_header_frame_id' feeds the point cloud/path frame_id too,

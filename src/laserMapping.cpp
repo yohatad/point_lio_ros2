@@ -2,6 +2,7 @@
 #include <mutex>
 #include <cmath>
 #include <thread>
+#include <filesystem>
 #include <fstream>
 #include <csignal>
 #include <Python.h>
@@ -590,7 +591,7 @@ void publish_frame_body(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::
     sensor_msgs::msg::PointCloud2 laserCloudmsg;
     pcl::toROSMsg(*laserCloudIMUBody, laserCloudmsg);
     laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
-    laserCloudmsg.header.frame_id = "body";
+    laserCloudmsg.header.frame_id = body_frame;
     pubLaserCloudFull_body->publish(laserCloudmsg);
     publish_count -= PUBFRAME_PERIOD;
 }
@@ -1310,10 +1311,21 @@ int main(int argc, char **argv) {
     /* 1. make sure you have enough memories
        2. noted that pcd save will influence the real-time performences **/
     if (pcl_wait_save->size() > 0 && pcd_save_en) {
-        string file_name = string("scans.pcd");
-        string all_points_dir(string(string(ROOT_DIR) + "PCD/") + file_name);
+        // map_file_path empty => upstream default (ROOT_DIR/PCD/scans.pcd,
+        // i.e. inside the source tree). Set it to write somewhere real --
+        // same knob as FAST-LIO's map_file_path.
+        string all_points_dir = map_file_path.empty()
+            ? string(string(ROOT_DIR) + "PCD/scans.pcd")
+            : map_file_path;
+        std::filesystem::path out_path(all_points_dir);
+        if (out_path.has_parent_path()) {
+            std::error_code ec;
+            std::filesystem::create_directories(out_path.parent_path(), ec);
+        }
         pcl::PCDWriter pcd_writer;
         pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
+        std::cout << "Point-LIO saved accumulated map (" << pcl_wait_save->size()
+                  << " pts) to " << all_points_dir << std::endl;
     }
     fout_out.close();
     fout_imu_pbp.close();

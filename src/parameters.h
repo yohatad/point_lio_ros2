@@ -12,6 +12,16 @@
 extern bool odom_only;
 extern std::string odom_header_frame_id;
 extern std::string odom_child_frame_id;
+// frame_id stamped on /cloud_registered_body. Upstream hardcoded this to
+// "body"; made configurable (matching FAST-LIO's publish.body_frame) because
+// any TF-based consumer -- e.g. octomap_server -- silently drops every scan
+// when the frame does not exist in the tree.
+extern std::string body_frame;
+// Where the raw accumulated cloud is written at shutdown when pcd_save_en is
+// true. Empty = upstream default (ROOT_DIR/PCD/scans.pcd, i.e. inside the
+// SOURCE TREE). Mirrors FAST-LIO's map_file_path so both backends can be
+// pointed at a real output directory.
+extern std::string map_file_path;
 
 extern bool is_first_frame;
 extern double lidar_end_time, first_lidar_time, time_con;

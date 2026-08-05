@@ -68,10 +68,13 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(velodyne_ros::Point,
  * @brief Unilidar Point Type
  */
 namespace unilidar_ros {
+    // No ring field: unilidar_handler() (preprocess.cpp) never reads .ring,
+    // and the L2 driver's PointCloud2 doesn't publish one -- declaring it
+    // here just made pcl::fromROSMsg log "Failed to find match for field
+    // 'ring'" on every scan for a field nothing downstream uses.
     struct EIGEN_ALIGN16 Point {
         PCL_ADD_POINT4D
         PCL_ADD_INTENSITY
-        std::uint16_t ring;
         float time;
 
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -82,7 +85,6 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(unilidar_ros::Point,
                                     (float, y, y)
                                     (float, z, z)
                                     (float, intensity, intensity)
-                                    (std::uint16_t, ring, ring)
                                     (float, time, time)
                                     )
 

@@ -1,4 +1,9 @@
-/.idea/
-/cmake-build-debug/
+__pycache__/
+*.pyc
+build/
+install/
+log/
+
+# generated map output -- 100+ MB, never commit
+PCD/
 *.pcd
-/Log/pos_log.csv

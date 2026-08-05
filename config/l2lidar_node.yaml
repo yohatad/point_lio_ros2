@@ -37,11 +37,34 @@
             match_s: 81.0
             fov_degree: 180.0
             det_range: 30.0 # Unitree L2 actual max range
-            gravity_align: true # true to align the z axis of world frame with the direction of gravity, and the gravity direction should be specified below
+            # FALSE on purpose -- this is the KEY setting that makes Point-LIO's
+            # 'odom' frame mean the same thing as FAST-LIO's.
+            #   true  -> Point-LIO rotates its world frame so Z is up, using the
+            #            accelerometer at startup. FAST-LIO does NOT do this (its
+            #            equivalent line is commented out upstream; it keeps
+            #            gravity as an estimated S2 state instead). The two
+            #            backends then produce DIFFERENT 'odom' orientations
+            #            under the same frame name, so anything downstream that
+            #            uses odom for geometry silently changes behaviour when
+            #            you swap backends.
+            #   false -> gravity is taken from the measured mean_acc in the
+            #            initial IMU body frame and state.rot stays IDENTITY --
+            #            byte-for-byte the same policy as FAST-LIO.
+            # The L2 is rigidly bolted to Pepper's base at ~90 deg (Z forward,
+            # gravity split across IMU X/Y: [-0.913, +0.407, +0.004]), and that
+            # mount is captured once in pepper_sensor_tf's calibration. A rigid,
+            # calibrated mount is a better source for the leveling rotation than
+            # a startup accelerometer sample, so there is nothing to gain here.
+            gravity_align: false
             gravity: [0.0, 0.0, -9.810] # [0.0, 9.810, 0.0] # gravity to be aligned
-            gravity_init: [0.0, 0.0, -9.810] # [0.0, 9.810, 0.0] # # preknown gravity in the first IMU body frame, use when imu_en is false or start from a non-stationary state
+            # Gravity expressed in the FIRST IMU BODY FRAME -- derived from the
+            # static base_footprint -> l2lidar_frame_imu calibration, NOT [0,0,-9.81]
+            # (that would only be right for a level-mounted IMU; this one is at
+            # ~90 deg). Only used when start_in_aggressive_motion is true, but
+            # wrong values here would silently corrupt that path.
+            gravity_init: [-8.9608, 3.9923, 0.0425] # preknown gravity in the first IMU body frame, use when imu_en is false or start from a non-stationary state
 
-            # transform from imu to lidar (matches l2lidar_node's published l2lidar_frame -> l2lidar_imu static TF, inverted)
+            # transform from imu to lidar (matches l2lidar_node's published l2lidar_frame -> l2lidar_frame_imu static TF, inverted)
             extrinsic_T: [ 0.007698, 0.014655, -0.00667]
             extrinsic_R: [ 1.0, 0.0, 0.0,
                           0.0, 1.0, 0.0,
@@ -53,7 +76,16 @@
         publish:
             path_en: true                 # false: close the path output
             scan_publish_en: true         # false: close all the point cloud output
-            scan_bodyframe_pub_en: false  # true: output the point cloud scans in IMU-body-frame
+            scan_bodyframe_pub_en: true  # true: output the point cloud scans in IMU-body-frame; required for /cloud_registered_body, which fastlio_lc_pgo subscribes to
+            body_frame: "l2lidar_frame_imu"    # frame_id stamped on /cloud_registered_body. MUST be a real frame in the TF tree (matches FAST_LIO/config/l2.yaml): octomap_server does a TF lookup on it and silently drops every scan if it cannot resolve. Upstream default is the nonexistent "body".
+
+        # Where pcd_save_en writes the raw accumulated cloud at shutdown.
+        # Upstream hardcoded this to <point_lio source>/PCD/scans.pcd -- i.e.
+        # into the SOURCE TREE. Now configurable, matching FAST_LIO/config/
+        # l2.yaml's map_file_path. NOTE this is the raw, un-loop-closed cloud;
+        # for a localization prior prefer pointlio_lc_l2.launch.py's
+        # /pgo_batch_optimize map_batch.pcd, which is loop-corrected.
+        map_file_path: "/home/yoha/Lidar/run_l2_pointlio/l2_pointlio_map.pcd"
 
         pcd_save:
             pcd_save_en: true       # save map to pcd file

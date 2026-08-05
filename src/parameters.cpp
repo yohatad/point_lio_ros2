@@ -2,6 +2,8 @@
 
 bool odom_only;
 std::string odom_header_frame_id, odom_child_frame_id;
+std::string body_frame;
+std::string map_file_path;
 
 bool is_first_frame = true;
 double lidar_end_time = 0.0, first_lidar_time = 0.0, time_con = 0.0;
@@ -90,8 +92,11 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->declare_parameter<bool>("publish.path_en", true);
     nh->declare_parameter<bool>("publish.scan_publish_en", true);
     nh->declare_parameter<bool>("publish.scan_bodyframe_pub_en", true);
+    // Default "body" preserves upstream behaviour for configs that do not set it.
+    nh->declare_parameter<std::string>("publish.body_frame", "body");
     nh->declare_parameter<bool>("runtime_pos_log_enable", false);
     nh->declare_parameter<bool>("pcd_save.pcd_save_en", false);
+    nh->declare_parameter<std::string>("map_file_path", "");
     nh->declare_parameter<int>("pcd_save.interval", -1);
 
     // 使用get_parameter方法获取参数值
@@ -150,8 +155,10 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     nh->get_parameter("publish.path_en", path_en);
     nh->get_parameter("publish.scan_publish_en", scan_pub_en);
     nh->get_parameter("publish.scan_bodyframe_pub_en", scan_body_pub_en);
+    nh->get_parameter("publish.body_frame", body_frame);
     nh->get_parameter("runtime_pos_log_enable", runtime_pos_log);
     nh->get_parameter("pcd_save.pcd_save_en", pcd_save_en);
+    nh->get_parameter("map_file_path", map_file_path);
     nh->get_parameter("pcd_save.interval", pcd_save_interval);
 }
 

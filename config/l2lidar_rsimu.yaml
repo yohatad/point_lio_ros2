@@ -1,0 +1,138 @@
+# Point-LIO for the Unitree L2 lidar driven by the REALSENSE IMU (/camera/imu)
+# instead of the L2's own (/imu/data). A/B partner to l2lidar_node.yaml --
+# everything not mentioned below is identical to it, so read that file for the
+# shared rationale.
+#
+# WHY. The L2's gyro suppresses rotation about the gravity axis: below ~16 deg/s
+# it reports EXACTLY zero, between 16 and 50 it chatters between zero and the
+# correct value, above ~50 it is accurate to 0.3 %. Pepper's normal pivot speeds
+# (10-25 deg/s) sit inside the suppressed band. Full evidence, including the
+# hand-turn control that rules out drivetrain vibration, in
+# utils/L2_IMU/REPORT.md; investigation record in LOG.md sections 11-20.
+#
+# STATUS: UNVALIDATED. Not yet run. The FAST-LIO equivalent
+# (FAST_LIO/config/l2_rsimu.yaml) measured 3.8 % -> 2.4 % mean yaw error and
+# 11.2 % -> 4.6 % worst on a dropout-heavy window; this config has not had the
+# same A/B.
+
+/**:
+    ros__parameters:
+        common:
+            lid_topic: "/points"
+            imu_topic: "/camera/imu"    # CHANGED from /imu/data
+            # /camera/imu is published BEST_EFFORT, exactly like /imu/data, so
+            # bag replay needs it in config/play_qos.yaml or rmw silently
+            # delivers nothing and Point-LIO waits forever for IMU init.
+            con_frame: false
+            con_frame_num: 1
+            cut_frame: false
+            cut_frame_time_interval: 0.1
+            time_lag_imu_to_lidar: 0.0
+            # ^ NOT known to be zero here. l2lidar_node.yaml can assume 0.0
+            # because the L2 timestamps both streams; the RealSense is a
+            # different driver with its own clock. Cross-correlating the two
+            # gyros put the offset within 5 ms, and a +/-20 ms sweep on the
+            # FAST-LIO side came out flat, but that was FAST-LIO's
+            # time_offset_lidar_to_imu -- re-sweep here if registration looks
+            # smeared during rotation.
+
+        preprocess:
+            lidar_type: 5
+            scan_line: 18
+            timestamp_unit: 0
+            # 2026-08-12: 0.5 -> 0.1 for cross-estimator consistency, so all
+            # three LIO variants are fed the same points and an A/B compares
+            # like with like.
+            # BE AWARE this is not cosmetic. Point-LIO gates on GEOMETRY
+            # (unilidar_handler, preprocess.cpp:298 tests x*x+y*y+z*z >
+            # blind*blind), unlike FAST-LIO and FAST-LIVO2 which test the
+            # `range` FIELD. So 0.5 here was genuinely discarding ~20.8 % of
+            # every scan (1106 of ~5300 points on bag/slam_august_8_bag);
+            # at 0.1 it discards 0.03 % (~1.5 points). Point-LIO now sees the
+            # near field it previously rejected -- including the band the L2
+            # distorts most (LOG.md section 14.3). If registration degrades,
+            # this is the first thing to put back to 0.5.
+            blind: 0.1
+
+        mapping:
+            imu_en: true
+            start_in_aggressive_motion: false
+            extrinsic_est_en: false
+            imu_time_inte: 0.005        # CHANGED from 0.004: RealSense is 200 Hz, the L2 250 Hz
+            satu_acc: 30.0              # RealSense max observed 19.3 m/s^2 -- ample headroom
+            satu_gyro: 35.0             # rad/s; RealSense max observed 2.84 rad/s (162.8 deg/s)
+            acc_norm: 9.81
+            lidar_meas_cov: 0.005
+            acc_cov_output: 500.0       # OUTPUT-model process noise -- INACTIVE (use_imu_as_input: true)
+            gyr_cov_output: 1000.0      # INACTIVE
+            b_acc_cov: 0.0001           # bias random walk: L2 values kept as a starting point.
+            b_gyr_cov: 0.0001           # NOT characterised for the D435i -- the static bags cannot
+                                        # determine it (LOG.md section 16b), so settle it by A/B.
+            imu_meas_acc_cov: 0.1       # INACTIVE
+            imu_meas_omg_cov: 0.1       # INACTIVE
+            # ACTIVE pair (use_imu_as_input: true). Rescaled from
+            # l2lidar_node.yaml by the measured variance ratio between the two
+            # IMUs on gated-still windows with the lidar motor running -- which
+            # is the operating condition, and where the L2 sits at gyro 0.745
+            # deg/s / accel 0.374 m/s^2 against the RealSense's 2.771 / 0.125:
+            #     gyro  variance x13.8   ->  0.1 * 13.8 = 1.4
+            #     accel variance x0.11   ->  2.0 * 0.11 = 0.22
+            # The trade is real in both directions: the RealSense gyro is
+            # genuinely noisier, its accelerometer far quieter (the L2's IMU
+            # sits inside the spinning-motor housing). A noisier gyro that
+            # always reports beats a quiet one that reports zero for 30 % of
+            # rotation -- and in angle terms this noise costs ~0.06 deg per
+            # scan against the 5+ deg per turn the suppression was costing.
+            gyr_cov_input: 1.4          # was 0.1
+            acc_cov_input: 0.22         # was 2.0
+            plane_thr: 0.1
+            match_s: 81.0
+            fov_degree: 180.0
+            det_range: 30.0
+            gravity_align: false
+            gravity: [0.0, 0.0, -9.810]
+            # Gravity in the FIRST IMU BODY FRAME, i.e. the negative of the mean
+            # accelerometer reading at rest -- same convention as
+            # l2lidar_node.yaml's L2 value, but that one is expressed in the L2
+            # frame (gravity along +X) and is WRONG for this topic. Measured on
+            # a stationary window of bags/l2_diag_0811_1031: the RealSense reads
+            # [+0.0726, -9.7176, -0.0297] at rest, so gravity is its negative.
+            # The RealSense IMU is optical-convention (Y down), which is why
+            # this is nearly a pure +Y vector where the L2's is nearly +X.
+            gravity_init: [-0.0726, 9.7176, 0.0297]
+            # Lidar origin expressed in the RealSense IMU frame:
+            #   p_camera_imu_optical = extrinsic_R * p_l2lidar + extrinsic_T
+            # (Point-LIO uses the same convention as FAST-LIO -- laserMapping.cpp:130
+            #  p_body_imu = Lidar_R_wrt_IMU * p_body_lidar + Lidar_T_wrt_IMU.)
+            # Identical values to FAST_LIO/config/l2_rsimu.yaml; see that file for
+            # the derivation. NB the target is camera_imu_OPTICAL_frame, which is
+            # what /camera/imu is stamped with -- omitting the final optical
+            # rotation leaves the extrinsic 87.4 deg wrong. VALIDATED against
+            # gravity to 2.59 deg.
+            extrinsic_T: [ 0.009866, 0.056363, -0.008096 ]
+            extrinsic_R: [  0.434395,  0.900105,  0.033359,
+                           -0.899601,  0.435404, -0.033784,
+                           -0.044933, -0.015334,  0.998872 ]
+
+        odometry:
+            publish_odometry_without_downsample: false
+
+        publish:
+            path_en: true
+            scan_publish_en: true
+            scan_bodyframe_pub_en: true
+            # CHANGED from l2lidar_frame_imu: the estimated body is now the
+            # camera's IMU. sensor_tf.yaml already publishes the full chain
+            # base_footprint -> l2lidar_frame -> camera_camera_link ->
+            # camera_gyro_frame -> camera_imu_frame -> camera_imu_optical_frame,
+            # so the tree still closes -- but lio_map_odom_bridge must be told
+            # which frame:  lidar_imu_frame:=camera_imu_optical_frame
+            # or it keeps its l2lidar_frame_imu default and silently produces a
+            # wrong odom -> base_footprint.
+            body_frame: "camera_imu_optical_frame"
+
+        map_file_path: "/home/yoha/Lidar/run_l2_pointlio_rsimu/l2_pointlio_rsimu_map.pcd"
+
+        pcd_save:
+            pcd_save_en: false      # off by default so an A/B run cannot overwrite a map
+            interval: -1

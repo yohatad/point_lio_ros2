@@ -8,6 +8,19 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     # Declare the RViz argument
+    config_file_arg = DeclareLaunchArgument(
+        'config_file', default_value='l2lidar_node.yaml',
+        description='Config under point_lio/config. l2lidar_node.yaml uses the '
+                    "L2's own IMU; l2lidar_rsimu.yaml uses the RealSense's "
+                    '(/camera/imu) -- see utils/L2_IMU/REPORT.md for why.'
+    )
+    lidar_imu_frame_arg = DeclareLaunchArgument(
+        'lidar_imu_frame', default_value='l2lidar_frame_imu',
+        description='Static-tree frame corresponding to the selected config\'s '
+                    'publish.body_frame, used by lio_map_odom_bridge to close '
+                    'odom -> base_footprint. Pass camera_imu_optical_frame '
+                    'with l2lidar_rsimu.yaml.'
+    )
     rviz_arg = DeclareLaunchArgument(
         'rviz', default_value='true',
         description='Flag to launch RViz.')
@@ -55,7 +68,7 @@ def generate_launch_description():
     laser_mapping_params = [
         PathJoinSubstitution([
             FindPackageShare('point_lio'),
-            'config', 'l2lidar_node.yaml'
+            'config', LaunchConfiguration('config_file')
         ]),
         {
             'use_imu_as_input': True,  # input model (FAST-LIO-style propagation): more robust to the L2's vibration-heavy IMU than the output model
@@ -85,6 +98,11 @@ def generate_launch_description():
     laser_mapping_node = Node(
         package='point_lio',
         executable='pointlio_mapping',
+        # Standard odometry topic across every LIO variant: FAST-LIO publishes
+        # /Odometry natively, Point-LIO and FAST-LIVO2 /aft_mapped_to_init.
+        # Each mapping launch remaps its own to /odom_lio so consumers need not
+        # know which estimator is running.
+        remappings=[('/aft_mapped_to_init', '/odom_lio')],
         name='laserMapping',
         output='screen',
         parameters=laser_mapping_params,
@@ -101,7 +119,12 @@ def generate_launch_description():
         name='lio_map_odom_bridge',
         output='screen',
         parameters=[{
-            'odom_topic': '/aft_mapped_to_init',
+            'odom_topic': '/odom_lio',
+            # MUST match publish.body_frame in the selected config:
+            # l2lidar_node.yaml -> l2lidar_frame_imu (the default),
+            # l2lidar_rsimu.yaml -> camera_imu_optical_frame.
+            # A mismatch silently yields a wrong odom -> base_footprint.
+            'lidar_imu_frame': LaunchConfiguration('lidar_imu_frame'),
             'flatten_base_frame': LaunchConfiguration('flatten_base_frame'),
             'publish_level_frame': LaunchConfiguration('bridge_level_frame'),
             'level_frame_as_child': LaunchConfiguration('level_frame_as_child'),
@@ -122,6 +145,8 @@ def generate_launch_description():
 
     # Assemble the launch description
     ld = LaunchDescription([
+        config_file_arg,
+        lidar_imu_frame_arg,
         rviz_arg,
         rviz_cfg_arg,
         use_sim_time_arg,

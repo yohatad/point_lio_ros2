@@ -1,8 +1,15 @@
+# Point-LIO configuration for the Unitree L2 lidar on the Pepper rig.
+# Companion: FAST_LIO/config/l2.yaml (same sensor, other backend).
+#
+# TWO NOISE MODELS, ONLY ONE ACTIVE: use_imu_as_input is true in
+# mapping_l2lidar_node.launch.py, so the *_cov_input pair runs and the
+# *_cov_output / imu_meas_* pair is inert. Editing the wrong pair does nothing.
+
 /**:
     ros__parameters:
         common:
-            lid_topic: "/points"
-            imu_topic: "/imu/data"
+            lid_topic: "/points"        # input PointCloud2 topic
+            imu_topic: "/imu/data"      # input Imu topic; subscribed RELIABLE, so bag replay needs config/play_qos.yaml
             con_frame: false # true: if you need to combine several LiDAR frames into one
             con_frame_num: 1 # the number of frames combined
             cut_frame: false # true: if you need to cut one LiDAR frame into several subframes
@@ -11,13 +18,33 @@
                                         # the timesample of IMU is transferred from the current timeline to LiDAR's timeline by subtracting this value
 
         preprocess:
-            lidar_type: 5
-            scan_line: 18
+            lidar_type: 5               # 5 = Unitree L2 parser
+            scan_line: 18               # -> N_SCANS. INERT on lidar_type 5: unilidar_handler (preprocess.cpp:259-302) has no ring logic at all, and unilidar_ros::Point has no ring member. N_SCANS is only used by velodyne_handler (185-188) and hesai_handler (317-319). FAST-LIO's 1 is equally inert; the mismatch has no effect.
+            # LIVE on this path, and correctly set. unilidar_handler:288 does
+            # `added_pt.curvature = pl_orig.points[i].time * time_unit_scale`,
+            # and 0 (=SEC) gives time_unit_scale = 1e3, converting the field's
+            # relative SECONDS into the milliseconds curvature expects.
+            # Measured 0 -> 0.0929 s across an 0.0885 s sweep on
+            # bag/slam_august_8_bag confirms the field really is seconds.
+            # NOTE this is the OPPOSITE of FAST-LIO, whose l2_handler hardcodes
+            # the 1e3 and ignores this parameter entirely.
             timestamp_unit: 0           # l2lidar_node publishes the per-point "time" field as relative seconds (float32)
-            blind: 0.5
+            # 2026-08-12: 0.5 -> 0.1 for cross-estimator consistency, so all
+            # three LIO variants are fed the same points and an A/B compares
+            # like with like.
+            # BE AWARE this is not cosmetic. Point-LIO gates on GEOMETRY
+            # (unilidar_handler, preprocess.cpp:298 tests x*x+y*y+z*z >
+            # blind*blind), unlike FAST-LIO and FAST-LIVO2 which test the
+            # `range` FIELD. So 0.5 here was genuinely discarding ~20.8 % of
+            # every scan (1106 of ~5300 points on bag/slam_august_8_bag);
+            # at 0.1 it discards 0.03 % (~1.5 points). Point-LIO now sees the
+            # near field it previously rejected -- including the band the L2
+            # distorts most (LOG.md section 14.3). If registration degrades,
+            # this is the first thing to put back to 0.5.
+            blind: 0.1
 
         mapping:
-            imu_en: true
+            imu_en: true                # use the IMU at all; false = lidar-only
             start_in_aggressive_motion: false # if true, a preknown gravity should be provided in following gravity_init
             extrinsic_est_en: false # for aggressive motion, set this variable false
             imu_time_inte: 0.004 # = 1 / frequency of IMU
@@ -25,17 +52,17 @@
             satu_gyro: 35.0 # the saturation value of IMU's angular velocity. not related to the units
             acc_norm: 9.81 # 1.0 for g as unit, 9.81 for m/s^2 as unit of the IMU's acceleration
             lidar_meas_cov: 0.005 # weight lidar harder relative to the noisy IMU
-            acc_cov_output: 500.0
-            gyr_cov_output: 1000.0
-            b_acc_cov: 0.0001
-            b_gyr_cov: 0.0001
-            imu_meas_acc_cov: 2.0 # raised from 0.1: L2 accel carries strong 13-26 Hz motor-vibration noise (same reason FAST-LIO l2.yaml uses acc_cov 2.0)
-            imu_meas_omg_cov: 0.1
-            gyr_cov_input: 0.1 # for IMU as input model (matches FAST-LIO l2.yaml gyr_cov)
-            acc_cov_input: 2.0 # for IMU as input model: L2 accel carries strong 13-26 Hz motor-vibration noise (matches FAST-LIO l2.yaml acc_cov)
+            acc_cov_output: 500.0       # OUTPUT-model process noise -- INACTIVE (see header)
+            gyr_cov_output: 1000.0      # OUTPUT-model process noise -- INACTIVE (see header)
+            b_acc_cov: 0.0001           # accel BIAS random walk; used by both models
+            b_gyr_cov: 0.0001           # gyro BIAS random walk; used by both models
+            imu_meas_acc_cov: 2.0 # INACTIVE (see header). raised from 0.1: L2 accel carries strong 13-26 Hz motor-vibration noise (same reason FAST-LIO l2.yaml uses acc_cov 2.0)
+            imu_meas_omg_cov: 0.1       # OUTPUT-model IMU measurement noise -- INACTIVE (see header)
+            gyr_cov_input: 0.1 # ACTIVE. for IMU as input model (matches FAST-LIO l2.yaml gyr_cov)
+            acc_cov_input: 2.0 # ACTIVE. for IMU as input model: L2 accel carries strong 13-26 Hz motor-vibration noise (matches FAST-LIO l2.yaml acc_cov)
             plane_thr: 0.1 # 0.05, the threshold for plane criteria, the smaller, the flatter a plane
-            match_s: 81.0
-            fov_degree: 180.0
+            match_s: 81.0               # scale factor on the point-to-plane association gating
+            fov_degree: 180.0           # DEAD: laserMapping.cpp:728-729 computes FOV_DEG/HALF_FOV_COS into LOCALS and nothing reads them. FAST-LIO's 360.0 is equally inert -- the mismatch has no effect.
             det_range: 30.0 # Unitree L2 actual max range
             # FALSE on purpose -- this is the KEY setting that makes Point-LIO's
             # 'odom' frame mean the same thing as FAST-LIO's.
@@ -56,7 +83,7 @@
             # calibrated mount is a better source for the leveling rotation than
             # a startup accelerometer sample, so there is nothing to gain here.
             gravity_align: false
-            gravity: [0.0, 0.0, -9.810] # [0.0, 9.810, 0.0] # gravity to be aligned
+            gravity: [0.0, 0.0, -9.810] # [0.0, 9.810, 0.0] # gravity to be aligned -- only used when gravity_align is true
             # Gravity expressed in the FIRST IMU BODY FRAME -- derived from the
             # static base_footprint -> l2lidar_frame_imu calibration, NOT [0,0,-9.81]
             # (that would only be right for a level-mounted IMU; this one is at
@@ -65,8 +92,8 @@
             gravity_init: [-8.9608, 3.9923, 0.0425] # preknown gravity in the first IMU body frame, use when imu_en is false or start from a non-stationary state
 
             # transform from imu to lidar (matches l2lidar_node's published l2lidar_frame -> l2lidar_frame_imu static TF, inverted)
-            extrinsic_T: [ 0.007698, 0.014655, -0.00667]
-            extrinsic_R: [ 1.0, 0.0, 0.0,
+            extrinsic_T: [ 0.007698, 0.014655, -0.00667]    # lidar->IMU translation (m); identical to FAST-LIO's copy
+            extrinsic_R: [ 1.0, 0.0, 0.0,                   # lidar->IMU rotation matrix (identity: axes already aligned)
                           0.0, 1.0, 0.0,
                           0.0, 0.0, 1.0 ]
 
@@ -78,6 +105,10 @@
             scan_publish_en: true         # false: close all the point cloud output
             scan_bodyframe_pub_en: true  # true: output the point cloud scans in IMU-body-frame; required for /cloud_registered_body, which fastlio_lc_pgo subscribes to
             body_frame: "l2lidar_frame_imu"    # frame_id stamped on /cloud_registered_body. MUST be a real frame in the TF tree (matches FAST_LIO/config/l2.yaml): octomap_server does a TF lookup on it and silently drops every scan if it cannot resolve. Upstream default is the nonexistent "body".
+            # The Odometry child_frame_id is a SEPARATE param (odom_child_frame_id),
+            # deliberately left at "aft_mapped" in mapping_l2lidar_node.launch.py:71-78
+            # so Point-LIO's unconditional TF broadcast lands on an unclaimed frame.
+            # lio_map_odom_bridge's mismatch warning is expected and harmless.
 
         # Where pcd_save_en writes the raw accumulated cloud at shutdown.
         # Upstream hardcoded this to <point_lio source>/PCD/scans.pcd -- i.e.
@@ -88,6 +119,6 @@
         map_file_path: "/home/yoha/Lidar/run_l2_pointlio/l2_pointlio_map.pcd"
 
         pcd_save:
-            pcd_save_en: true       # save map to pcd file
+            pcd_save_en: true       # save map to pcd file; held in RAM for the whole run
             interval: -1            # how many LiDAR frames saved in each pcd file;
                                         # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.

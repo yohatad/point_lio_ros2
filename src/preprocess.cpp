@@ -273,8 +273,16 @@ void Preprocess::unilidar_handler(const sensor_msgs::msg::PointCloud2::SharedPtr
     int countElimnated = 0;
     for (int i = 0; i < plsize; i++)
     {
+      // Apply point_filter_num, as every other handler does (lines 147, 247,
+      // 380). It was missing here, so mapping_l2lidar_node.launch.py's
+      // 'point_filter_num': 3 -- set with the comment "decimate 3x so
+      // processing keeps up in real time (dropped scans made the filter
+      // diverge)" -- had NO effect on the L2 path: all ~5375 points per scan
+      // were processed instead of the intended ~1790. Added 2026-08-10.
+      if (i % point_filter_num != 0) continue;
+
       PointType added_pt;
-      
+
       added_pt.normal_x = 0;
       added_pt.normal_y = 0;
       added_pt.normal_z = 0;

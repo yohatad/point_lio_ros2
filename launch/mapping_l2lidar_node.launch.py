@@ -1,25 +1,57 @@
 from launch import LaunchDescription
-from launch.actions import GroupAction, DeclareLaunchArgument
+from launch.actions import GroupAction, DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
+# publish.body_frame is a PROPERTY OF THE CONFIG, not an independent choice:
+# l2lidar_node.yaml estimates the L2's IMU, l2lidar_rsimu.yaml the RealSense's.
+# lio_map_odom_bridge uses it to close odom -> base_footprint and a mismatch is
+# silent, so derive it and let an explicit value override for other configs.
+_BODY_FRAME_BY_CONFIG = {
+    'l2lidar_node.yaml': 'l2lidar_frame_imu',
+    'l2lidar_rsimu.yaml': 'camera_imu_optical_frame',
+}
+
+
+def _resolve_lidar_imu_frame(context, *args, **kwargs):
+    import os
+    from launch.actions import SetLaunchConfiguration
+    explicit = LaunchConfiguration('lidar_imu_frame').perform(context)
+    if explicit:
+        return [SetLaunchConfiguration('resolved_lidar_imu_frame', explicit)]
+    cfg = os.path.basename(LaunchConfiguration('config_file').perform(context))
+    frame = _BODY_FRAME_BY_CONFIG.get(cfg)
+    if frame is None:
+        raise RuntimeError(
+            f"config_file '{cfg}' is not in mapping_l2lidar_node.launch.py's "
+            f"body-frame table {sorted(_BODY_FRAME_BY_CONFIG)}, so "
+            f"lidar_imu_frame cannot be derived. Pass it explicitly -- it must "
+            f"match the config's publish.body_frame or lio_map_odom_bridge "
+            f"closes odom -> base_footprint through the wrong frame.")
+    return [SetLaunchConfiguration('resolved_lidar_imu_frame', frame)]
+
+
 def generate_launch_description():
     # Declare the RViz argument
     config_file_arg = DeclareLaunchArgument(
-        'config_file', default_value='l2lidar_node.yaml',
+        'config_file', default_value='l2lidar_rsimu.yaml',
         description='Config under point_lio/config. l2lidar_node.yaml uses the '
                     "L2's own IMU; l2lidar_rsimu.yaml uses the RealSense's "
                     '(/camera/imu) -- see utils/L2_IMU/REPORT.md for why.'
     )
+    # DERIVED from config_file when empty -- see _resolve_lidar_imu_frame. It
+    # used to default to l2lidar_frame_imu unconditionally, which made switching
+    # IMU a TWO-argument change: pass config_file alone and the bridge closes
+    # odom -> base_footprint through the wrong static frame, silently, because
+    # the tree still resolves.
     lidar_imu_frame_arg = DeclareLaunchArgument(
-        'lidar_imu_frame', default_value='l2lidar_frame_imu',
-        description='Static-tree frame corresponding to the selected config\'s '
-                    'publish.body_frame, used by lio_map_odom_bridge to close '
-                    'odom -> base_footprint. Pass camera_imu_optical_frame '
-                    'with l2lidar_rsimu.yaml.'
+        'lidar_imu_frame', default_value='',
+        description='Override the static frame matching the config\'s '
+                    'publish.body_frame. Empty (default) derives it from '
+                    'config_file.'
     )
     rviz_arg = DeclareLaunchArgument(
         'rviz', default_value='true',
@@ -124,7 +156,7 @@ def generate_launch_description():
             # l2lidar_node.yaml -> l2lidar_frame_imu (the default),
             # l2lidar_rsimu.yaml -> camera_imu_optical_frame.
             # A mismatch silently yields a wrong odom -> base_footprint.
-            'lidar_imu_frame': LaunchConfiguration('lidar_imu_frame'),
+            'lidar_imu_frame': LaunchConfiguration('resolved_lidar_imu_frame'),
             'flatten_base_frame': LaunchConfiguration('flatten_base_frame'),
             'publish_level_frame': LaunchConfiguration('bridge_level_frame'),
             'level_frame_as_child': LaunchConfiguration('level_frame_as_child'),
@@ -147,6 +179,8 @@ def generate_launch_description():
     ld = LaunchDescription([
         config_file_arg,
         lidar_imu_frame_arg,
+        # AFTER the declares above: the resolver reads both of them.
+        OpaqueFunction(function=_resolve_lidar_imu_frame),
         rviz_arg,
         rviz_cfg_arg,
         use_sim_time_arg,

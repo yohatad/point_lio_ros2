@@ -781,7 +781,12 @@ int main(int argc, char **argv) {
     // } else {
     sub_pcl = nh->create_subscription<sensor_msgs::msg::PointCloud2>(lid_topic, rclcpp::SensorDataQoS(), standard_pcl_cbk);
     // }
-    auto sub_imu = nh->create_subscription<sensor_msgs::msg::Imu>(imu_topic, 200000, imu_cbk);
+    // SensorDataQoS (BEST_EFFORT), not a plain depth: a plain depth is
+    // RELIABLE, which matches NOTHING against the BEST_EFFORT publisher every
+    // real IMU driver offers, so rmw silently delivers no IMU and Point-LIO
+    // never initialises. Same bug fixed in FAST_LIO; see the long note there.
+    auto sub_imu = nh->create_subscription<sensor_msgs::msg::Imu>(
+        imu_topic, rclcpp::SensorDataQoS().keep_last(200000), imu_cbk);
 
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFullRes;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFullRes_body;

@@ -82,8 +82,8 @@ def generate_launch_description():
     )
     level_frame_as_child_arg = DeclareLaunchArgument(
         'level_frame_as_child', default_value='false',
-        description='Publish the leveling transform as odom_lidar -> odom '
-                    '(child) instead of odom -> odom_lidar (parent). Use with '
+        description='Publish the leveling transform as lio_init -> odom '
+                    '(child) instead of odom -> lio_init (parent). Use with '
                     'bridge_level_frame:=true when a localizer already owns '
                     'map -> odom, so odom still exists without giving '
                     'odom two parents.'
@@ -121,7 +121,7 @@ def generate_launch_description():
             # parent. Left at its "aft_mapped" default (unclaimed frame,
             # harmless orphan branch) -- lio_map_odom_bridge.py below does
             # the real odom -> base_footprint republish instead.
-            'odom_header_frame_id': 'odom_lidar',
+            'odom_header_frame_id': 'lio_init',
             'use_sim_time': LaunchConfiguration('use_sim_time'),
         }
     ]
@@ -143,10 +143,10 @@ def generate_launch_description():
 
     # Republishes Point-LIO's odometry (odom -> aft_mapped, i.e. odom -> l2lidar_frame_imu
     # in physical terms) as odom -> base_footprint, reusing the same bridge
-    # FAST-LIO uses -- see FAST_LIO_ROS2/scripts/lio_map_odom_bridge.py for the
+    # FAST-LIO uses -- see pepper_slam/scripts/lio_map_odom_bridge.py for the
     # full explanation of why this indirection exists.
     odom_bridge_node = Node(
-        package='fast_lio',
+        package='pepper_slam',
         executable='lio_map_odom_bridge.py',
         name='lio_map_odom_bridge',
         output='screen',

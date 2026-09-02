@@ -8,7 +8,7 @@ from launch_ros.substitutions import FindPackageShare
 
 # publish.body_frame is a PROPERTY OF THE CONFIG, not an independent choice:
 # l2lidar_node.yaml estimates the L2's IMU, l2lidar_rsimu.yaml the RealSense's.
-# lio_map_odom_bridge uses it to close odom -> base_footprint and a mismatch is
+# lio_odom_bridge uses it to close odom -> base_footprint and a mismatch is
 # silent, so derive it and let an explicit value override for other configs.
 _BODY_FRAME_BY_CONFIG = {
     'l2lidar_node.yaml': 'l2lidar_frame_imu',
@@ -29,7 +29,7 @@ def _resolve_lidar_imu_frame(context, *args, **kwargs):
             f"config_file '{cfg}' is not in mapping_l2lidar_node.launch.py's "
             f"body-frame table {sorted(_BODY_FRAME_BY_CONFIG)}, so "
             f"lidar_imu_frame cannot be derived. Pass it explicitly -- it must "
-            f"match the config's publish.body_frame or lio_map_odom_bridge "
+            f"match the config's publish.body_frame or lio_odom_bridge "
             f"closes odom -> base_footprint through the wrong frame.")
     return [SetLaunchConfiguration('resolved_lidar_imu_frame', frame)]
 
@@ -90,7 +90,7 @@ def generate_launch_description():
     )
     bridge_level_frame_arg = DeclareLaunchArgument(
         'bridge_level_frame', default_value='true',
-        description='Have lio_map_odom_bridge publish the static odom -> '
+        description='Have lio_odom_bridge publish the static odom -> '
                     'odom leveling frame. Set false when a higher layer owns '
                     'odom (e.g. PGO publishing map -> odom), so odom does not '
                     'end up with two parents (odom AND map).'
@@ -119,7 +119,7 @@ def generate_launch_description():
             # unconditional, no publish_tf-style disable flag) would then
             # fight the static l2lidar_frame -> l2lidar_frame_imu transform for a
             # parent. Left at its "aft_mapped" default (unclaimed frame,
-            # harmless orphan branch) -- lio_map_odom_bridge.py below does
+            # harmless orphan branch) -- lio_odom_bridge.py below does
             # the real odom -> base_footprint republish instead.
             'odom_header_frame_id': 'lio_init',
             'use_sim_time': LaunchConfiguration('use_sim_time'),
@@ -143,12 +143,12 @@ def generate_launch_description():
 
     # Republishes Point-LIO's odometry (odom -> aft_mapped, i.e. odom -> l2lidar_frame_imu
     # in physical terms) as odom -> base_footprint, reusing the same bridge
-    # FAST-LIO uses -- see pepper_slam/scripts/lio_map_odom_bridge.py for the
+    # FAST-LIO uses -- see pepper_slam/scripts/lio_odom_bridge.py for the
     # full explanation of why this indirection exists.
     odom_bridge_node = Node(
         package='pepper_slam',
-        executable='lio_map_odom_bridge.py',
-        name='lio_map_odom_bridge',
+        executable='lio_odom_bridge.py',
+        name='lio_odom_bridge',
         output='screen',
         parameters=[{
             'odom_topic': '/odom_lio',

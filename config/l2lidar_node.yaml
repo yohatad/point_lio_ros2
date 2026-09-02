@@ -108,7 +108,7 @@
             # The Odometry child_frame_id is a SEPARATE param (odom_child_frame_id),
             # deliberately left at "aft_mapped" in mapping_l2lidar_node.launch.py:71-78
             # so Point-LIO's unconditional TF broadcast lands on an unclaimed frame.
-            # lio_map_odom_bridge's mismatch warning is expected and harmless.
+            # lio_odom_bridge's mismatch warning is expected and harmless.
 
         # Where pcd_save_en writes the raw accumulated cloud at shutdown.
         # Upstream hardcoded this to <point_lio source>/PCD/scans.pcd -- i.e.

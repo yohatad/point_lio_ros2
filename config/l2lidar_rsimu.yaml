@@ -125,7 +125,7 @@
             # camera's IMU. sensor_tf.yaml already publishes the full chain
             # base_footprint -> l2lidar_frame -> camera_camera_link ->
             # camera_gyro_frame -> camera_imu_frame -> camera_imu_optical_frame,
-            # so the tree still closes -- but lio_map_odom_bridge must be told
+            # so the tree still closes -- but lio_odom_bridge must be told
             # which frame:  lidar_imu_frame:=camera_imu_optical_frame
             # or it keeps its l2lidar_frame_imu default and silently produces a
             # wrong odom -> base_footprint.

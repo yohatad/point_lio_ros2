@@ -48,7 +48,7 @@ def generate_launch_description():
     # odom -> base_footprint through the wrong static frame, silently, because
     # the tree still resolves.
     lidar_imu_frame_arg = DeclareLaunchArgument(
-        'lidar_imu_frame', default_value='',
+        'lidar_imu_frame', default_value='camera_imu_optical_frame',
         description='Override the static frame matching the config\'s '
                     'publish.body_frame. Empty (default) derives it from '
                     'config_file.'

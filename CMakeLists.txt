@@ -46,6 +46,9 @@ find_package(pcl_ros REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
 # find_package(livox_ros_driver2 REQUIRED)
 
 find_package(Eigen3 REQUIRED)
@@ -69,6 +72,19 @@ include_directories(
 
 # Declare a ROS2 executable
 add_executable(pointlio_mapping src/laserMapping.cpp include/ikd-Tree/ikd_Tree.cpp src/parameters.cpp src/preprocess.cpp src/Estimator.cpp)
+
+# ---------------- POINT-LIO LOCALIZATION ---------------- #
+# Localization against a prior map: the same estimator, but the prior map IS
+# the ikd-Tree it registers against, so the map constraint lives inside the
+# filter rather than in a correction node beside it. Built beside
+# pointlio_mapping, not instead of it -- mapping still needs the plain node.
+add_executable(pointlio_localization
+  src/laserLocalization.cpp
+  include/ikd-Tree/ikd_Tree.cpp
+  src/parameters.cpp
+  src/preprocess.cpp
+  src/Estimator.cpp
+  include/Scancontext/Scancontext.cpp)
 ament_target_dependencies(pointlio_mapping
         rclcpp
         rclpy
@@ -84,9 +100,27 @@ ament_target_dependencies(pointlio_mapping
 target_link_libraries(pointlio_mapping ${PYTHON_LIBRARIES})
 target_include_directories(pointlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
 
+ament_target_dependencies(pointlio_localization
+        rclcpp
+        rclpy
+        geometry_msgs
+        nav_msgs
+        sensor_msgs
+        std_srvs
+        std_msgs
+        diagnostic_msgs
+        pcl_ros
+        pcl_conversions
+        tf2_ros
+        visualization_msgs
+)
+target_link_libraries(pointlio_localization ${PYTHON_LIBRARIES})
+target_include_directories(pointlio_localization PRIVATE ${PYTHON_INCLUDE_DIRS})
+
 # Install the executable
 install(TARGETS
         pointlio_mapping
+        pointlio_localization
         DESTINATION lib/${PROJECT_NAME}
 )
 

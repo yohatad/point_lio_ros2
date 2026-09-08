@@ -784,23 +784,107 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
 
     pubOdomAftMapped->publish(odomAftMapped);
 
-    //static tf2_ros::TransformBroadcaster br = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
     geometry_msgs::msg::TransformStamped transform;
     transform.header.frame_id = odom_header_frame_id;
-    transform.child_frame_id = odom_child_frame_id;
-
-    transform.transform.translation.x = odomAftMapped.pose.pose.position.x;
-    transform.transform.translation.y = odomAftMapped.pose.pose.position.y;
-    transform.transform.translation.z = odomAftMapped.pose.pose.position.z;
-
-    transform.transform.rotation.w = odomAftMapped.pose.pose.orientation.w;
-    transform.transform.rotation.x = odomAftMapped.pose.pose.orientation.x;
-    transform.transform.rotation.y = odomAftMapped.pose.pose.orientation.y;
-    transform.transform.rotation.z = odomAftMapped.pose.pose.orientation.z;
-
     transform.header.stamp = odomAftMapped.header.stamp;
 
+    // REP-105 wants map -> base_footprint, but the filter estimates map -> the
+    // IMU on the mast, and the bag's /tf_static already owns
+    // base_footprint -> that IMU frame. Broadcasting the IMU edge here too
+    // would give it TWO parents and split the tree, so compose the static
+    // body -> child extrinsic out and broadcast map -> child instead.
+    //
+    // Resolved ONCE and cached: it is static, and until the lookup succeeds
+    // nothing is broadcast at all -- a map -> base edge computed from a missing
+    // extrinsic would be silently wrong rather than absent.
+    if (!tf_child_frame.empty() && tf_child_frame != odom_child_frame_id) {
+        if (!tf_child_resolved) {
+            if (!tf_buffer_g) return;
+            try {
+                auto tfs = tf_buffer_g->lookupTransform(
+                    odom_child_frame_id, tf_child_frame, tf2::TimePointZero);
+                const auto &q = tfs.transform.rotation;
+                const auto &v = tfs.transform.translation;
+                Eigen::Quaterniond eq(q.w, q.x, q.y, q.z);
+                R_body_to_tfchild = eq.toRotationMatrix();
+                t_body_to_tfchild = V3D(v.x, v.y, v.z);
+                tf_child_resolved = true;
+            } catch (const tf2::TransformException &ex) {
+                // Throttled, not silent: the only visible effect of returning
+                // quietly here is nav2 waiting forever for a map frame that is
+                // never going to arrive.
+                RCLCPP_WARN_THROTTLE(this_logger(), *node_g->get_clock(), 5000,
+                    "cannot resolve %s -> %s yet (%s); NOT broadcasting %s -> %s "
+                    "until it does",
+                    odom_child_frame_id.c_str(), tf_child_frame.c_str(), ex.what(),
+                    odom_header_frame_id.c_str(), tf_child_frame.c_str());
+                return;
+            }
+        }
+        const Eigen::Quaterniond q_mb(odomAftMapped.pose.pose.orientation.w,
+                                      odomAftMapped.pose.pose.orientation.x,
+                                      odomAftMapped.pose.pose.orientation.y,
+                                      odomAftMapped.pose.pose.orientation.z);
+        const M3D R_mb = q_mb.toRotationMatrix();
+        const V3D p_mb(odomAftMapped.pose.pose.position.x,
+                       odomAftMapped.pose.pose.position.y,
+                       odomAftMapped.pose.pose.position.z);
+        const M3D R_mc = R_mb * R_body_to_tfchild;
+        const V3D p_mc = R_mb * t_body_to_tfchild + p_mb;
+        const Eigen::Quaterniond q_mc(R_mc);
+        transform.child_frame_id = tf_child_frame;
+        transform.transform.translation.x = p_mc(0);
+        transform.transform.translation.y = p_mc(1);
+        transform.transform.translation.z = p_mc(2);
+        transform.transform.rotation.w = q_mc.w();
+        transform.transform.rotation.x = q_mc.x();
+        transform.transform.rotation.y = q_mc.y();
+        transform.transform.rotation.z = q_mc.z();
+    } else {
+        transform.child_frame_id = odom_child_frame_id;
+        transform.transform.translation.x = odomAftMapped.pose.pose.position.x;
+        transform.transform.translation.y = odomAftMapped.pose.pose.position.y;
+        transform.transform.translation.z = odomAftMapped.pose.pose.position.z;
+        transform.transform.rotation = odomAftMapped.pose.pose.orientation;
+    }
+
     tf_br->sendTransform(transform);
+
+    // /localization/pose -- the SAME pose, but genuinely in tf_child_frame
+    // rather than the mast IMU, so a consumer that assumes child_frame_id is
+    // the robot base reads the right thing. nav2_params_pointloc.yaml points
+    // bt_navigator's odom_topic at this.
+    if (pub_localization_g && tf_child_resolved) {
+        nav_msgs::msg::Odometry loc;
+        loc.header = odomAftMapped.header;
+        loc.child_frame_id = tf_child_frame;
+        loc.pose.pose.position.x = transform.transform.translation.x;
+        loc.pose.pose.position.y = transform.transform.translation.y;
+        loc.pose.pose.position.z = transform.transform.translation.z;
+        loc.pose.pose.orientation = transform.transform.rotation;
+        loc.pose.covariance = odomAftMapped.pose.covariance;
+
+        // Twist is expressed in child_frame_id, so rotating alone is not
+        // enough -- the base origin sits off the body origin, so it also picks
+        // up the lever-arm term:
+        //   w_base = R * w_body
+        //   v_base = R * v_body + w_base x (R * t)
+        const M3D R_bb = R_body_to_tfchild.transpose();
+        const V3D r_b  = R_bb * t_body_to_tfchild;
+        const auto &tw = odomAftMapped.twist.twist;
+        const V3D v_b_in(tw.linear.x, tw.linear.y, tw.linear.z);
+        const V3D w_b_in(tw.angular.x, tw.angular.y, tw.angular.z);
+        const V3D w_o = R_bb * w_b_in;
+        const V3D v_o = R_bb * v_b_in + w_o.cross(r_b);
+        loc.twist.twist.linear.x = v_o(0);
+        loc.twist.twist.linear.y = v_o(1);
+        loc.twist.twist.linear.z = v_o(2);
+        loc.twist.twist.angular.x = w_o(0);
+        loc.twist.twist.angular.y = w_o(1);
+        loc.twist.twist.angular.z = w_o(2);
+        loc.twist.covariance = odomAftMapped.twist.covariance;
+        pub_localization_g->publish(loc);
+    }
 }
 
 void publish_path(const rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr &pubPath) {
@@ -1207,6 +1291,25 @@ int main(int argc, char **argv) {
     nh->get_parameter("publish.tf_child_frame", tf_child_frame);
     if (map_pose_file_param.empty()) map_pose_file_param = "pose.json";
     if (map_scan_dir_param.empty()) map_scan_dir_param = map_dir_param + "/pcd";
+    // Frames. After the handover the filter state IS the prior map's pose, so
+    // publishing into Point-LIO's mapping default ('camera_init', its own start
+    // frame) would name it wrongly -- the same misnomer FRAMES.md warns about.
+    // Override rather than silently mislabel, so `ros2 run` behaves too.
+    if (odom_header_frame_id == "camera_init") {
+        odom_header_frame_id = "map";
+        RCLCPP_INFO(nh->get_logger(),
+            "odom_header_frame_id was the mapping default 'camera_init'; using "
+            "'map' -- after the lock this estimate IS the prior map's pose.");
+    }
+    if (odom_child_frame_id == "aft_mapped") {
+        RCLCPP_WARN(nh->get_logger(),
+            "odom_child_frame_id is still 'aft_mapped'. It must name the frame "
+            "the filter actually estimates (publish.body_frame of the LIO "
+            "config, e.g. camera_imu_optical_frame) or the %s -> %s extrinsic "
+            "cannot be resolved and NO map TF will be broadcast.",
+            odom_child_frame_id.c_str(), tf_child_frame.c_str());
+    }
+
     if (map_dir_param.empty()) {
         RCLCPP_FATAL(nh->get_logger(),
             "localization.map_dir is required -- point it at a directory "

@@ -57,6 +57,13 @@ def generate_launch_description():
         DeclareLaunchArgument('tf_child_frame', default_value='base_footprint',
             description='Child of the broadcast map edge. The body->child '
                         'extrinsic is read from /tf_static once and cached.'),
+        # MUST match the config's publish.body_frame: the map -> base edge is
+        # composed through body -> base, so a mismatched body frame either
+        # fails to resolve (no TF at all) or composes through the wrong mount.
+        DeclareLaunchArgument('body_frame', default_value='camera_imu_optical_frame',
+            description='Frame the filter estimates. camera_imu_optical_frame '
+                        'for l2lidar_rsimu.yaml, l2lidar_frame_imu for '
+                        'l2lidar_node.yaml.'),
         # ScanContext descriptor geometry, sized to the L2 rather than
         # upstream's 64-beam car lidar.
         DeclareLaunchArgument('sc_max_radius', default_value='10.0',
@@ -111,6 +118,10 @@ def generate_launch_description():
             os.path.join(share, 'config', 'l2lidar_rsimu.yaml'),
             {'use_sim_time': LaunchConfiguration('use_sim_time'),
              'publish.tf_child_frame': LaunchConfiguration('tf_child_frame'),
+             # After the lock the estimate is in the prior map's frame, so the
+             # published header frame is 'map', not Point-LIO's own start frame.
+             'odom_header_frame_id': 'map',
+             'odom_child_frame_id': LaunchConfiguration('body_frame'),
              'localization.map_dir': LaunchConfiguration('map_dir'),
              'localization.map_scan_dir': LaunchConfiguration('map_scan_dir'),
              'localization.map_pose_file': LaunchConfiguration('map_pose_file'),

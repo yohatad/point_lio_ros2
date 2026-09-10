@@ -1,4 +1,5 @@
 #include "Scancontext.h"
+#include <cmath>
 
 // namespace SC2
 // {
@@ -22,6 +23,12 @@ float deg2rad(float degrees)
 
 float xy2theta( const float & _x, const float & _y )
 {
+    // (0,0) would take the first branch and return atan(0/0) = NaN, and a
+    // non-finite input falls through every branch below. Both end up binned
+    // by the caller through int(ceil(NaN)), so settle them here.
+    if ( !std::isfinite(_x) || !std::isfinite(_y) || (_x == 0 && _y == 0) )
+        return 0.0f;
+
     if ( _x >= 0 && _y >= 0)
         return (180/M_PI) * atan(_y / _x);
 

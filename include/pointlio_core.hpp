@@ -569,3 +569,33 @@ void publish_path(const rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr &pubPa
         pubPath->publish(path);
     }
 }
+
+/* --- main()'s working set, lifted to file scope ----------------------------
+   main() runs exactly once, so static lifetime changes nothing here. Lifting
+   these out of it is what lets main() be split into phases -- setup, scan
+   loop, shutdown -- without threading a dozen parameters through each, and it
+   matches how the rest of this codebase already holds its state.
+   Assigned in main(); declared here so every phase can see them. */
+int         frame_num = 0;
+double      aver_time_consu = 0, aver_time_icp = 0, aver_time_match = 0,
+            aver_time_incre = 0, aver_time_solve = 0, aver_time_propag = 0;
+std::time_t startTime, endTime;
+double      FOV_DEG = 0, HALF_FOV_COS = 0;
+Eigen::Matrix<double, 24, 24> P_init, Q_input;
+Eigen::Matrix<double, 30, 30> P_init_output, Q_output;
+FILE       *fp = nullptr;
+string      pos_log_dir;
+ofstream    fout_out, fout_imu_pbp;
+
+// Per-iteration timing scratch; was declared at the top of the scan loop.
+double t0, t1, t2, t3, t4, t5, match_start, solve_start;
+
+rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl;
+rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr         sub_imu;
+rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr    pubLaserCloudFullRes;
+rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr    pubLaserCloudFullRes_body;
+rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr    pubLaserCloudEffect;
+rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr    pubLaserCloudMap;
+rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr              pubPath;
+rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr          pubOdomAftMapped;
+std::shared_ptr<tf2_ros::TransformBroadcaster>                 tf_broadcaster;

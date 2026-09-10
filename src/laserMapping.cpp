@@ -112,13 +112,10 @@ int main(int argc, char **argv) {
     path.header.frame_id = odom_header_frame_id;
 
     /*** variables definition for counting ***/
-    int frame_num = 0;
-    double aver_time_consu = 0, aver_time_icp = 0, aver_time_match = 0, aver_time_incre = 0, aver_time_solve = 0, aver_time_propag = 0;
-    std::time_t startTime, endTime;
 
     /*** initialize variables ***/
-    double FOV_DEG = (fov_deg + 10.0) > 179.9 ? 179.9 : (fov_deg + 10.0);
-    double HALF_FOV_COS = cos((FOV_DEG) * 0.5 * PI_M / 180.0);
+    FOV_DEG = (fov_deg + 10.0) > 179.9 ? 179.9 : (fov_deg + 10.0);
+    HALF_FOV_COS = cos((FOV_DEG) * 0.5 * PI_M / 180.0);
 
     memset(point_selected_surf, true, sizeof(point_selected_surf));
     downSizeFilterSurf.setLeafSize(filter_size_surf_min, filter_size_surf_min, filter_size_surf_min);
@@ -139,25 +136,23 @@ int main(int argc, char **argv) {
 
     kf_input.init_dyn_share_modified(get_f_input, df_dx_input, h_model_input);
     kf_output.init_dyn_share_modified_2h(get_f_output, df_dx_output, h_model_output, h_model_IMU_output);
-    Eigen::Matrix<double, 24, 24> P_init = MD(24, 24)::Identity() * 0.01;
+    P_init = MD(24, 24)::Identity() * 0.01;
     P_init.block<3, 3>(21, 21) = MD(3, 3)::Identity() * 0.0001;
     P_init.block<6, 6>(15, 15) = MD(6, 6)::Identity() * 0.001;
     P_init.block<6, 6>(6, 6) = MD(6, 6)::Identity() * 0.0001;
     kf_input.change_P(P_init);
-    Eigen::Matrix<double, 30, 30> P_init_output = MD(30, 30)::Identity() * 0.01;
+    P_init_output = MD(30, 30)::Identity() * 0.01;
     P_init_output.block<3, 3>(21, 21) = MD(3, 3)::Identity() * 0.0001;
     P_init_output.block<6, 6>(6, 6) = MD(6, 6)::Identity() * 0.0001;
     P_init_output.block<6, 6>(24, 24) = MD(6, 6)::Identity() * 0.001;
     kf_input.change_P(P_init);
     kf_output.change_P(P_init_output);
-    Eigen::Matrix<double, 24, 24> Q_input = process_noise_cov_input();
-    Eigen::Matrix<double, 30, 30> Q_output = process_noise_cov_output();
+    Q_input = process_noise_cov_input();
+    Q_output = process_noise_cov_output();
     /*** debug record ***/
-    FILE *fp;
-    string pos_log_dir = root_dir + "/Log/pos_log.txt";
+    pos_log_dir = root_dir + "/Log/pos_log.txt";
     fp = fopen(pos_log_dir.c_str(), "w");
 
-    ofstream fout_out, fout_imu_pbp;
     fout_out.open(DEBUG_FILE_DIR("mat_out.txt"), ios::out);
     fout_imu_pbp.open(DEBUG_FILE_DIR("imu_pbp.txt"), ios::out);
     if (fout_out && fout_imu_pbp)
@@ -166,7 +161,6 @@ int main(int argc, char **argv) {
         cout << "~~~~" << ROOT_DIR << " doesn't exist" << endl;
 
     /*** ROS subscribe initialization ***/
-    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl;
     // rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr sub_pcl_livox_;
     // if (p_pre->lidar_type == AVIA) {
     //     sub_pcl_livox_ = nh->create_subscription<livox_ros_driver2::msg::CustomMsg>(lid_topic, 20, livox_pcl_cbk);
@@ -177,14 +171,9 @@ int main(int argc, char **argv) {
     // RELIABLE, which matches NOTHING against the BEST_EFFORT publisher every
     // real IMU driver offers, so rmw silently delivers no IMU and Point-LIO
     // never initialises. Same bug fixed in FAST_LIO; see the long note there.
-    auto sub_imu = nh->create_subscription<sensor_msgs::msg::Imu>(
+    sub_imu = nh->create_subscription<sensor_msgs::msg::Imu>(
         imu_topic, rclcpp::SensorDataQoS().keep_last(200000), imu_cbk);
 
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFullRes;
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFullRes_body;
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudEffect;
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudMap;
-    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath;
 
     if (!odom_only){
         pubLaserCloudFullRes = nh->create_publisher<sensor_msgs::msg::PointCloud2>
@@ -200,7 +189,6 @@ int main(int argc, char **argv) {
     }
 
     // Choose topic name depending on odom_only value
-    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped;
     if (odom_only){
         pubOdomAftMapped = nh->create_publisher<nav_msgs::msg::Odometry>
                 ("/odom_corrected", 100000);
@@ -211,7 +199,7 @@ int main(int argc, char **argv) {
 
     //auto plane_pub = nh->create_publisher<visualization_msgs::msg::Marker>
     //        ("/planner_normal", 1000);
-    auto tf_broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(nh);
+    tf_broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(nh);
 //------------------------------------------------------------------------------------------------------
     signal(SIGINT, SigHandle);
     rclcpp::Rate rate(5000);
@@ -235,7 +223,6 @@ int main(int argc, char **argv) {
                 flg_reset = false;
                 continue;
             }
-            double t0, t1, t2, t3, t4, t5, match_start, solve_start;
             match_time = 0;
             solve_time = 0;
             propag_time = 0;

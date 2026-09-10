@@ -17,6 +17,17 @@
 
 /**:
     ros__parameters:
+        # Voxel sizes. Unset, parameters.cpp defaults both to 0.5 m -- coarser
+        # than the 0.25 m floor the prior map is built at (FAST-LIO's
+        # l2_rsimu.yaml). MEASURED on slam_20260823_aligned against
+        # sc_pose_20260823: at 0.5 m ~300 points/scan survived, correspondences
+        # decayed from 87% to 0% within ~40 s of the lock and the filter walked
+        # off the map; at 0.25 m ~900 points/scan, ~99% matched, overlap held
+        # at 0.997 for the whole run. Top level, NOT under preprocess: --
+        # parameters.cpp declares them un-namespaced, and a mis-nested key is
+        # ignored without a warning.
+        filter_size_surf: 0.25
+        filter_size_map: 0.25
         common:
             lid_topic: "/points"
             imu_topic: "/camera/imu"    # CHANGED from /imu/data

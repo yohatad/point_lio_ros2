@@ -1,31 +1,31 @@
-// POINT-LIO LOCALIZATION against a prior map -- the Point-LIO twin of
-// FAST_LIO/src/laserLocalization.cpp, which carries the full reasoning.
+// =============================================================================
+//  point_lio_localization -- Point-LIO running against a prior map.
 //
-// Same idea, same map format: the prior map is loaded straight into the
-// ikd-Tree the filter registers against, so the map constrains the estimate
-// from INSIDE the filter at scan rate and there is no map->odom correction
-// step to jump. ScanContext + two-stage ICP finds the initial pose, gated on
-// agreement, map overlap and (optionally) motion.
+//  The prior map is loaded straight into the ikd-Tree the filter registers
+//  against, so it constrains the estimate from INSIDE the filter at scan rate.
+//  There is no map->odom correction step, and so nothing to jump. ScanContext
+//  plus two-stage ICP finds the initial pose, gated on agreement between
+//  independent estimates, on map overlap, and optionally on motion.
 //
-// DELIBERATELY A COPY, not a shared library with FAST_LIO. The two backends
-// differ where it matters -- Point-LIO carries two filter types (state_input
-// with the IMU as input, state_output with it as measurement) and runs a
-// point-by-point update -- and the pair is small enough that keeping them
-// independent beats a common abstraction that has to straddle both.
+//  Structure:
+//    pointlio_core.hpp         estimator core, shared with point_lio_mapping
+//    localization_search.hpp   prior map, the search, health reporting
+//    this file                 localization globals, publish_odometry, main()
 //
-// WHAT DIFFERS FROM THE FAST_LIO FILE:
-//   * The handover writes into kf_input or kf_output depending on
-//     use_imu_as_input. The world-frame quantities are the same four in both
-//     (pos, rot, vel, gravity); omg and acc are BODY frame -- get_f_output
-//     rotates acc by s.rot to get the inertial term, and the IMU residual
-//     compares omg against the raw gyro -- so they carry over untouched, as
-//     bg/ba do.
-//   * gravity is a plain vect3 here, not FAST-LIO's S2 manifold, so it is
-//     rotated directly.
-//   * Point-LIO has no node class or timer: main() owns a 5 kHz spin loop, so
-//     the health check is a time check inside that loop rather than a timer
-//     callback, and this is a plain rclcpp::Node (see the lifecycle note in
-//     the FAST_LIO file for what that costs).
+//  Differences from the FAST_LIO twin (FAST_LIO/src/laserLocalization.cpp,
+//  which carries the longer reasoning):
+//    * The handover writes into kf_input or kf_output depending on
+//      use_imu_as_input. omg and acc are BODY frame and carry over untouched,
+//      as bg/ba do; only pos, rot, vel and gravity are world frame.
+//    * gravity is a plain vect3 here, not FAST-LIO's S2 manifold, so it is
+//      rotated directly.
+//    * No node class or timer: main() owns a 5 kHz spin loop, so the health
+//      check is a time check inside that loop.
+//
+//  Deliberately not sharing an estimator with FAST_LIO: Point-LIO carries two
+//  filter types and runs a point-by-point update, so a common abstraction
+//  would have to straddle both and serve neither.
+// =============================================================================
 #include <omp.h>
 #include <mutex>
 #include <cmath>
@@ -143,6 +143,8 @@ rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubPriorMap;  // lif
 rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_overlap_g;
 rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr pub_diag_g;
 
+/* Logger for the free functions here and in localization_search.hpp, which
+   have no node handle. Falls back to a named logger before on_configure. */
 static rclcpp::Logger this_logger() {
     return node_g ? node_g->get_logger() : rclcpp::get_logger("point_lio_localization");
 }
@@ -156,6 +158,9 @@ static rclcpp::Logger this_logger() {
 // main().
 
 
+/* Publish the tracked pose. Unlike the mapping node's, this also broadcasts
+   map -> tf_child_frame and emits /localization/pose in that frame, with the
+   twist corrected for the lever arm between the IMU and the robot base. */
 void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr &pubOdomAftMapped,
                       std::shared_ptr<tf2_ros::TransformBroadcaster> &tf_br) {
 
@@ -306,6 +311,10 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
 
 
 
+/* Node entry point, in four phases: localization parameters and frame setup,
+   the shared setup_common(), the prior-map bring-up that must complete before
+   any scan is processed, then the 5 kHz spin loop -- handover, process_scan(),
+   init-thread feed and health check -- and shutdown_common(). */
 int main(int argc, char **argv) {
     rclcpp::init(argc, argv);
     auto nh = std::make_shared<rclcpp::Node>("point_lio_localization");
@@ -578,23 +587,17 @@ int main(int argc, char **argv) {
                     state_out.acc *= -1;
                 }
             }
-            /*** THE HANDOVER. A lock has been found but not yet applied: move
-             *** the filter state into map coordinates and give it the prior map
-             *** to register against. From here the estimate IS the map pose --
-             *** there is no map -> odom correction, which is the whole point.
+            /*** THE HANDOVER: move the filter into map coordinates and give it
+             *** the prior map. From here the estimate IS the map pose.
              ***
-             *** The lock names the scan it was computed from and odometry has
-             *** run on since, so carry it forward:
-             ***   T_map_now = T_map_at_lock * T_odom_at_lock^-1 * T_odom_now
-             *** A seed takes precedence and is applied directly -- no carry
-             *** forward -- so it is correct whether or not a lock exists.
+             *** The lock names a past scan, so carry it forward by the odometry
+             *** since:  T_map_now = T_map_at_lock * T_odom_at_lock^-1 * T_odom_now
+             *** A /initialpose seed is applied directly instead, no carry forward.
              ***
-             *** This is a change of WORLD FRAME, not a pose edit, so every
-             *** world-frame quantity rotates with it. In Point-LIO those are
-             *** pos, rot, vel and gravity; omg and acc are BODY frame (see the
-             *** file header) and carry over untouched, as bg/ba do. Leaving
-             *** gravity behind would leave it pointing sideways in the new
-             *** frame and the filter diverges within a few scans. ***/
+             *** This is a change of WORLD FRAME, not a pose edit, so pos, rot, vel
+             *** and gravity all rotate with it -- leaving gravity behind points it
+             *** sideways and the filter diverges within a few scans. omg/acc are
+             *** body frame and carry over untouched, as bg/ba do. ***/
             {
                 Eigen::Matrix4d T_map_now = Eigen::Matrix4d::Identity();
                 bool teleport = false;
@@ -708,14 +711,10 @@ int main(int argc, char **argv) {
                 }
             }
 
-            /*** Post-lock health check. Re-scores the CURRENT pose against the
-             *** prior map with the same map_overlap() used during init, because
-             *** a wrong-but-self-consistent lock has no other symptom -- a
-             *** self-similar place still produces plausible correspondences at
-             *** the wrong place. Only SUSTAINED low overlap is acted on: a
-             *** single dip is normal when turning into unmapped space or when
-             *** someone crosses the scan. No timer here -- Point-LIO's main()
-             *** owns the loop, so this is a time check inside it. ***/
+            /*** Post-lock health check: re-score the current pose with the same
+             *** map_overlap() used during init. A wrong-but-self-consistent lock
+             *** has no other symptom. Only SUSTAINED low overlap is acted on --
+             *** single dips are normal when turning into unmapped space. ***/
             if (global_update && map_loaded) {
                 const rclcpp::Time now_t = nh->get_clock()->now();
                 if ((now_t - last_health_check).seconds() >= health_check_period) {
@@ -817,12 +816,8 @@ int main(int argc, char **argv) {
     // Save the map if enabled and close the debug logs; see pointlio_core.hpp.
     shutdown_common();
 
-    // Stop and JOIN the search thread before main returns. Without this, a
-    // still-joinable std::thread is destroyed at scope exit and the process
-    // dies with "terminate called without an active exception" on every
-    // Ctrl-C -- which is exactly what it did before this was added. The
-    // thread's outer loop checks keep_searching before it checks whether a
-    // lock exists, so clearing it is enough to make it return within one tick.
+    // Join the search thread: a still-joinable std::thread destroyed at scope
+    // exit terminates the process. Clearing keep_searching returns it in one tick.
     {
         std::lock_guard<std::mutex> lk(init_state_mutex);
         keep_searching = false;

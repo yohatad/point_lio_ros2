@@ -20,6 +20,10 @@
 //  after those globals and after pointlio_core.hpp.
 // =============================================================================
 
+/*** Load the prior map: each keyframe's cloud and pose, plus the ScanContext
+ *** descriptor DB built from them. Clouds are described in their OWN frame,
+ *** which is what ScanContext needs, and transformed into map only to build
+ *** global_map. Fatal if absent: this node has nothing to do without a map. ***/
 bool load_prior_map(const rclcpp::Logger &log)
 {
     // Named per run, not a bare pose.json: this directory also holds
@@ -331,6 +335,9 @@ void rearm_search()
     global_update = false;
 }
 
+/*** Publish one /diagnostics status: whether a lock is held, and the current
+ *** map overlap when there is one. This is the signal to watch on a robot --
+ *** a lock that has quietly gone wrong shows up here before anywhere else. ***/
 void publish_diagnostic(uint8_t level, const std::string &message,
                         const std::string &overlap_value = "")
 {

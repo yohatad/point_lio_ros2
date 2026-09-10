@@ -65,12 +65,16 @@ geometry_msgs::msg::PoseStamped msg_body_pose;
 
 auto logger = rclcpp::get_logger("laserMapping");
 
+/* SIGINT handler: raise the exit flag and wake anything blocked on the buffer
+   condition variable, so the scan loop can unwind. */
 void SigHandle(int sig) {
     flg_exit = true;
     RCLCPP_WARN(logger, "catch sig %d", sig);
     sig_buffer.notify_all();
 }
 
+/* Append one line of filter state to pos_log.txt -- position, attitude,
+   velocity, biases, gravity. Only called when runtime_pos_log is set. */
 inline void dump_lio_state_to_log(FILE *fp) {
     V3D rot_ang;
     if (!use_imu_as_input) {
@@ -103,6 +107,8 @@ inline void dump_lio_state_to_log(FILE *fp) {
     fflush(fp);
 }
 
+/* Transform one point from the lidar frame into the IMU body frame, using the
+   calibrated lidar-IMU extrinsic. */
 void pointBodyLidarToIMU(PointType const *const pi, PointType *const po) {
     V3D p_body_lidar(pi->x, pi->y, pi->z);
     V3D p_body_imu;
@@ -123,6 +129,8 @@ void pointBodyLidarToIMU(PointType const *const pi, PointType *const po) {
 
 int points_cache_size = 0;
 
+/* Drain the ikd-Tree's removed-point cache after a box delete. The points are
+   discarded; only the running count is kept. */
 void points_cache_collect() // seems for debug
 {
     PointVector points_history;
@@ -133,6 +141,9 @@ void points_cache_collect() // seems for debug
 BoxPointType LocalMap_Points;
 bool Localmap_Initialized = false;
 
+/* Keep the local map bounded: slide the cube that follows the sensor and
+   box-delete whatever falls out behind it. Cheap because ikd-Tree drops a
+   fully-contained subtree in O(1). */
 void lasermap_fov_segment() {
     cub_needrm.shrink_to_fit();
 
@@ -184,6 +195,8 @@ void lasermap_fov_segment() {
     if (cub_needrm.size() > 0) int kdtree_delete_counter = ikdtree->Delete_Point_Boxes(cub_needrm);
 }
 
+/* Lidar subscription: preprocess the cloud and queue it. Runs on the executor
+   thread and only fills the buffer -- the scan loop does the work. */
 void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
     mtx_buffer.lock();
     scan_count++;
@@ -253,6 +266,8 @@ void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
     sig_buffer.notify_all();
 }
 
+/* IMU subscription: apply the lidar-IMU time offset and queue the sample.
+   Out-of-order samples are dropped rather than reordered. */
 void imu_cbk(const sensor_msgs::msg::Imu::SharedPtr msg_in) {
     publish_count++;
     sensor_msgs::msg::Imu::SharedPtr msg(new sensor_msgs::msg::Imu(*msg_in));
@@ -276,6 +291,9 @@ void imu_cbk(const sensor_msgs::msg::Imu::SharedPtr msg_in) {
     sig_buffer.notify_all();
 }
 
+/* Bundle one lidar scan with the IMU samples spanning it. Returns false until
+   both are available, so the filter never runs on a scan the IMU cannot
+   bracket. */
 bool sync_packages(MeasureGroup &meas) {
     if (!imu_en) {
         if (!lidar_buffer.empty()) {
@@ -366,6 +384,9 @@ bool sync_packages(MeasureGroup &meas) {
 
 int process_increments = 0;
 
+/* Insert the current scan into the ikd-Tree, skipping any point whose voxel
+   already holds one closer to the voxel centre. That test is what holds the map
+   at filter_size_map resolution without a periodic rebuild. */
 void map_incremental() {
     PointVector PointToAdd;
     PointVector PointNoNeedDownsample;
@@ -411,6 +432,7 @@ void map_incremental() {
     ikdtree->Add_Points(PointNoNeedDownsample, false);
 }
 
+/* Publish the whole map once, immediately after the ikd-Tree is first built. */
 void publish_init_kdtree(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr &pubLaserCloudFullRes) {
     
     if (odom_only) {return;}
@@ -435,6 +457,8 @@ void publish_init_kdtree(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>:
 PointCloudXYZI::Ptr pcl_wait_pub(new PointCloudXYZI(500000, 1));
 PointCloudXYZI::Ptr pcl_wait_save(new PointCloudXYZI());
 
+/* Publish the current scan in the world frame, and accumulate it into
+   pcl_wait_save when pcd_save_en is set. */
 void publish_frame_world(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr &pubLaserCloudFullRes) {
 
     if (odom_only) {return;}
@@ -493,6 +517,7 @@ void publish_frame_world(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>:
     }
 }
 
+/* Publish the current scan in the IMU body frame. */
 void publish_frame_body(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr &pubLaserCloudFull_body) {
 
     if (odom_only) {return;}
@@ -514,6 +539,8 @@ void publish_frame_body(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::
 }
 
 template<typename T>
+/* Fill a pose message from whichever filter is active -- kf_input when the IMU
+   is an input, kf_output when it is a measurement. */
 void set_posestamp(T &out) {
     if (!use_imu_as_input) {
         out.position.x = kf_output.x_.pos(0);
@@ -535,6 +562,8 @@ void set_posestamp(T &out) {
 }
 
 template<typename T>
+/* Fill a twist message: body-frame velocity from the filter, angular rate from
+   the last IMU sample. */
 void set_twist(T &out) {
     if (!use_imu_as_input) {
         out.linear.x = kf_output.x_.vel(0);
@@ -553,6 +582,7 @@ void set_twist(T &out) {
     }
 }
 
+/* Append the current pose to the accumulated path and republish it. */
 void publish_path(const rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr &pubPath) {
 
     if (odom_only) {return;}
@@ -668,10 +698,8 @@ void setup_common(const std::shared_ptr<rclcpp::Node> &nh)
     // } else {
     sub_pcl = nh->create_subscription<sensor_msgs::msg::PointCloud2>(lid_topic, rclcpp::SensorDataQoS(), standard_pcl_cbk);
     // }
-    // SensorDataQoS (BEST_EFFORT), not a plain depth: a plain depth is
-    // RELIABLE, which matches NOTHING against the BEST_EFFORT publisher every
-    // real IMU driver offers, so rmw silently delivers no IMU and Point-LIO
-    // never initialises. Same bug fixed in FAST_LIO; see the long note there.
+    // SensorDataQoS (BEST_EFFORT): a plain depth is RELIABLE and matches no real
+    // IMU driver, so no IMU arrives and the filter never initialises.
     sub_imu = nh->create_subscription<sensor_msgs::msg::Imu>(
         imu_topic, rclcpp::SensorDataQoS().keep_last(200000), imu_cbk);
 
@@ -738,17 +766,12 @@ void shutdown_common()
 void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr &pubOdomAftMapped,
                       std::shared_ptr<tf2_ros::TransformBroadcaster> &tf_br);
 
-/* One scan through the estimator: prune the map to the FOV, downsample,
-   build the map on the first scans or update it, run the point-by-point
-   filter update, and publish. Was duplicated verbatim inside both scan
-   loops.
+/* One scan through the estimator: prune the map to the FOV, downsample, build
+   or update the map, run the point-by-point filter update, and publish.
 
-   Returns false when the caller should skip the rest of this loop
-   iteration. Inside main() that was a bare `continue`; a function cannot
-   continue its caller's loop, so the two in the map-initialisation branch
-   became `return false` and every call site is `if (!process_scan())
-   continue;`. The other four `continue`s here belong to the inner
-   point-by-point loop and are unchanged. */
+   Returns false where this code used to `continue` main()'s loop -- a function
+   cannot continue its caller's -- so call it as `if (!process_scan()) continue;`.
+   The `continue`s remaining inside belong to the point-by-point loop. */
 bool process_scan()
 {
             /*** Segment the map in lidar FOV ***/

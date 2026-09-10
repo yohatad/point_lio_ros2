@@ -38,12 +38,21 @@ condition_variable sig_buffer;
 
 #include "pointlio_core.hpp"
 
-// The estimator core -- globals, callbacks, scan/IMU sync, the ikd-Tree map,
-// the measurement models and the cloud/path publishers -- is shared with
-// point_lio_localization and lives in pointlio_core.hpp. Below: the odometry
-// publisher (localization has its own) and main().
+// =============================================================================
+//  point_lio_mapping -- Point-LIO building a map as it goes.
+//
+//  The ikd-Tree starts empty and grows from the scans themselves, which is the
+//  only real difference from point_lio_localization: same estimator, same scan
+//  pipeline, no prior map and no initial-pose search.
+//
+//  Structure:
+//    pointlio_core.hpp   estimator core, shared with point_lio_localization
+//    this file           publish_odometry (localization has its own) and main()
+// =============================================================================
 
 
+/* Publish the tracked pose and broadcast odom -> body as TF. The localization
+   node has its own, which additionally emits /localization/pose. */
 void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr &pubOdomAftMapped,
                       std::shared_ptr<tf2_ros::TransformBroadcaster> &tf_br) {
 
@@ -102,6 +111,9 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
 }
 
 
+/* Node entry point: read parameters, run the shared setup_common(), then spin
+   a 5 kHz loop calling process_scan() for each synchronised scan, and finish
+   with shutdown_common(). */
 int main(int argc, char **argv) {
     rclcpp::init(argc, argv);
     auto nh = std::make_shared<rclcpp::Node>("laserMapping");

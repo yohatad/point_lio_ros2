@@ -599,3 +599,106 @@ rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr    pubLaserCloudMap;
 rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr              pubPath;
 rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr          pubOdomAftMapped;
 std::shared_ptr<tf2_ros::TransformBroadcaster>                 tf_broadcaster;
+
+/* Setup shared by both nodes: filter init, extrinsics, process noise,
+   debug logs, and the subscriptions and publishers every run needs.
+   Was duplicated verbatim in both main()s. Everything it touches lives at
+   file scope (see main()'s working set above), so `nh` is the only
+   parameter. Each node does its own setup either side of this call. */
+void setup_common(const std::shared_ptr<rclcpp::Node> &nh)
+{
+    cout << "lidar_type: " << lidar_type << endl;
+
+    path.header.stamp = get_ros_time(lidar_end_time);
+    path.header.frame_id = odom_header_frame_id;
+
+    /*** variables definition for counting ***/
+
+    /*** initialize variables ***/
+    FOV_DEG = (fov_deg + 10.0) > 179.9 ? 179.9 : (fov_deg + 10.0);
+    HALF_FOV_COS = cos((FOV_DEG) * 0.5 * PI_M / 180.0);
+
+    memset(point_selected_surf, true, sizeof(point_selected_surf));
+    downSizeFilterSurf.setLeafSize(filter_size_surf_min, filter_size_surf_min, filter_size_surf_min);
+    downSizeFilterMap.setLeafSize(filter_size_map_min, filter_size_map_min, filter_size_map_min);
+    Lidar_T_wrt_IMU << VEC_FROM_ARRAY(extrinT);
+    Lidar_R_wrt_IMU << MAT_FROM_ARRAY(extrinR);
+    if (extrinsic_est_en) {
+        if (!use_imu_as_input) {
+            kf_output.x_.offset_R_L_I = Lidar_R_wrt_IMU;
+            kf_output.x_.offset_T_L_I = Lidar_T_wrt_IMU;
+        } else {
+            kf_input.x_.offset_R_L_I = Lidar_R_wrt_IMU;
+            kf_input.x_.offset_T_L_I = Lidar_T_wrt_IMU;
+        }
+    }
+    p_imu->lidar_type = p_pre->lidar_type = lidar_type;
+    p_imu->imu_en = imu_en;
+
+    kf_input.init_dyn_share_modified(get_f_input, df_dx_input, h_model_input);
+    kf_output.init_dyn_share_modified_2h(get_f_output, df_dx_output, h_model_output, h_model_IMU_output);
+    P_init = MD(24, 24)::Identity() * 0.01;
+    P_init.block<3, 3>(21, 21) = MD(3, 3)::Identity() * 0.0001;
+    P_init.block<6, 6>(15, 15) = MD(6, 6)::Identity() * 0.001;
+    P_init.block<6, 6>(6, 6) = MD(6, 6)::Identity() * 0.0001;
+    kf_input.change_P(P_init);
+    P_init_output = MD(30, 30)::Identity() * 0.01;
+    P_init_output.block<3, 3>(21, 21) = MD(3, 3)::Identity() * 0.0001;
+    P_init_output.block<6, 6>(6, 6) = MD(6, 6)::Identity() * 0.0001;
+    P_init_output.block<6, 6>(24, 24) = MD(6, 6)::Identity() * 0.001;
+    kf_input.change_P(P_init);
+    kf_output.change_P(P_init_output);
+    Q_input = process_noise_cov_input();
+    Q_output = process_noise_cov_output();
+    /*** debug record ***/
+    pos_log_dir = root_dir + "/Log/pos_log.txt";
+    fp = fopen(pos_log_dir.c_str(), "w");
+
+    fout_out.open(DEBUG_FILE_DIR("mat_out.txt"), ios::out);
+    fout_imu_pbp.open(DEBUG_FILE_DIR("imu_pbp.txt"), ios::out);
+    if (fout_out && fout_imu_pbp)
+        cout << "~~~~" << ROOT_DIR << " file opened" << endl;
+    else
+        cout << "~~~~" << ROOT_DIR << " doesn't exist" << endl;
+
+    /*** ROS subscribe initialization ***/
+    // rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr sub_pcl_livox_;
+    // if (p_pre->lidar_type == AVIA) {
+    //     sub_pcl_livox_ = nh->create_subscription<livox_ros_driver2::msg::CustomMsg>(lid_topic, 20, livox_pcl_cbk);
+    // } else {
+    sub_pcl = nh->create_subscription<sensor_msgs::msg::PointCloud2>(lid_topic, rclcpp::SensorDataQoS(), standard_pcl_cbk);
+    // }
+    // SensorDataQoS (BEST_EFFORT), not a plain depth: a plain depth is
+    // RELIABLE, which matches NOTHING against the BEST_EFFORT publisher every
+    // real IMU driver offers, so rmw silently delivers no IMU and Point-LIO
+    // never initialises. Same bug fixed in FAST_LIO; see the long note there.
+    sub_imu = nh->create_subscription<sensor_msgs::msg::Imu>(
+        imu_topic, rclcpp::SensorDataQoS().keep_last(200000), imu_cbk);
+
+
+    if (!odom_only){
+        pubLaserCloudFullRes = nh->create_publisher<sensor_msgs::msg::PointCloud2>
+                ("/cloud_registered", 100000);
+        pubLaserCloudFullRes_body = nh->create_publisher<sensor_msgs::msg::PointCloud2>
+                ("/cloud_registered_body", 100000);
+        pubLaserCloudEffect = nh->create_publisher<sensor_msgs::msg::PointCloud2>
+                ("/cloud_effected", 100000);
+        pubLaserCloudMap = nh->create_publisher<sensor_msgs::msg::PointCloud2>
+                ("/Laser_map", 100000);
+        pubPath = nh->create_publisher<nav_msgs::msg::Path>
+                ("/path", 100000);
+    }
+
+    // Choose topic name depending on odom_only value
+    if (odom_only){
+        pubOdomAftMapped = nh->create_publisher<nav_msgs::msg::Odometry>
+                ("/odom_corrected", 100000);
+    } else {
+        pubOdomAftMapped = nh->create_publisher<nav_msgs::msg::Odometry>
+                ("/aft_mapped_to_init", 100000);
+    }
+
+    //auto plane_pub = nh->create_publisher<visualization_msgs::msg::Marker>
+    //        ("/planner_normal", 1000);
+    tf_broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(nh);
+}

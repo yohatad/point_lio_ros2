@@ -7,7 +7,7 @@ PointCloudXYZI::Ptr feats_down_body(new PointCloudXYZI());
 PointCloudXYZI::Ptr feats_down_world(new PointCloudXYZI());
 std::vector<V3D> pbody_list;
 std::vector<PointVector> Nearest_Points;
-KD_TREE<PointType> ikdtree;
+KD_TREE<PointType>::Ptr ikdtree(new KD_TREE<PointType>());
 std::vector<float> pointSearchSqDis(NUM_MATCH_POINTS);
 bool point_selected_surf[100000] = {0};
 std::vector<M3D> crossmat_list;
@@ -197,7 +197,7 @@ void h_model_input(state_input &s, esekfom::dyn_share_modified<double> &ekfom_da
 		{
 			auto &points_near = Nearest_Points[idx+j+1];
 			
-			ikdtree.Nearest_Search(point_world_j, NUM_MATCH_POINTS, points_near, pointSearchSqDis, 2.236); //1.0); //, 3.0); // 2.236;
+			ikdtree->Nearest_Search(point_world_j, NUM_MATCH_POINTS, points_near, pointSearchSqDis, 2.236); //1.0); //, 3.0); // 2.236;
 			
 			if ((points_near.size() < NUM_MATCH_POINTS) || pointSearchSqDis[NUM_MATCH_POINTS - 1] > 5) // 5)
 			{
@@ -283,7 +283,7 @@ void h_model_output(state_output &s, esekfom::dyn_share_modified<double> &ekfom_
 		{
 			auto &points_near = Nearest_Points[idx+j+1];
 			
-			ikdtree.Nearest_Search(point_world_j, NUM_MATCH_POINTS, points_near, pointSearchSqDis, 2.236); 
+			ikdtree->Nearest_Search(point_world_j, NUM_MATCH_POINTS, points_near, pointSearchSqDis, 2.236); 
 			
 			if ((points_near.size() < NUM_MATCH_POINTS) || pointSearchSqDis[NUM_MATCH_POINTS - 1] > 5)
 			{

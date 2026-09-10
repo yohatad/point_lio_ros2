@@ -1,3 +1,6 @@
+#pragma once
+// Include guard added: this header defines a class and free functions but had
+// none, so any second inclusion in one translation unit is a redefinition error.
 #include <rclcpp/rclcpp.hpp>
 #include <pcl_conversions/pcl_conversions.h>
 #include <sensor_msgs/msg/point_cloud2.hpp>

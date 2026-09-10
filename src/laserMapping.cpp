@@ -140,7 +140,7 @@ int points_cache_size = 0;
 void points_cache_collect() // seems for debug
 {
     PointVector points_history;
-    ikdtree.acquire_removed_points(points_history);
+    ikdtree->acquire_removed_points(points_history);
     points_cache_size = points_history.size();
 }
 
@@ -195,7 +195,7 @@ void lasermap_fov_segment() {
     LocalMap_Points = New_LocalMap_Points;
 
     points_cache_collect();
-    if (cub_needrm.size() > 0) int kdtree_delete_counter = ikdtree.Delete_Point_Boxes(cub_needrm);
+    if (cub_needrm.size() > 0) int kdtree_delete_counter = ikdtree->Delete_Point_Boxes(cub_needrm);
 }
 
 void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
@@ -490,22 +490,22 @@ void map_incremental() {
             PointNoNeedDownsample.emplace_back(feats_down_world->points[i]);
         }
     }
-    int add_point_size = ikdtree.Add_Points(PointToAdd, true);
-    ikdtree.Add_Points(PointNoNeedDownsample, false);
+    int add_point_size = ikdtree->Add_Points(PointToAdd, true);
+    ikdtree->Add_Points(PointNoNeedDownsample, false);
 }
 
 void publish_init_kdtree(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr &pubLaserCloudFullRes) {
     
     if (odom_only) {return;}
 
-    int size_init_ikdtree = ikdtree.size();
+    int size_init_ikdtree = ikdtree->size();
     PointCloudXYZI::Ptr laserCloudInit(new PointCloudXYZI(size_init_ikdtree, 1));
 
     sensor_msgs::msg::PointCloud2 laserCloudmsg;
-    PointVector().swap(ikdtree.PCL_Storage);
-    ikdtree.flatten(ikdtree.Root_Node, ikdtree.PCL_Storage, NOT_RECORD);
+    PointVector().swap(ikdtree->PCL_Storage);
+    ikdtree->flatten(ikdtree->Root_Node, ikdtree->PCL_Storage, NOT_RECORD);
 
-    laserCloudInit->points = ikdtree.PCL_Storage;
+    laserCloudInit->points = ikdtree->PCL_Storage;
     pcl::toROSMsg(*laserCloudInit, laserCloudmsg);
 
     laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
@@ -911,10 +911,10 @@ int main(int argc, char **argv) {
 
             /*** initialize the map kdtree ***/
             if (!init_map) {
-                if (ikdtree.Root_Node == nullptr) //
+                if (ikdtree->Root_Node == nullptr) //
                     // if(feats_down_size > 5)
                 {
-                    ikdtree.set_downsample_param(filter_size_map_min);
+                    ikdtree->set_downsample_param(filter_size_map_min);
                 }
 
                 feats_down_world->resize(feats_down_size);
@@ -925,7 +925,7 @@ int main(int argc, char **argv) {
                     init_feats_world->points.emplace_back(feats_down_world->points[i]);
                 }
                 if (init_feats_world->size() < init_map_size) continue;
-                ikdtree.Build(init_feats_world->points);
+                ikdtree->Build(init_feats_world->points);
                 init_map = true;
                 publish_init_kdtree(pubLaserCloudMap); //(pubLaserCloudFullRes);
                 continue;

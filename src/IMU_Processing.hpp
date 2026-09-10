@@ -1,3 +1,6 @@
+#pragma once
+// Include guard added: this header defines a class and free functions but had
+// none, so any second inclusion in one translation unit is a redefinition error.
 #include <cmath>
 #include <math.h>
 #include <deque>

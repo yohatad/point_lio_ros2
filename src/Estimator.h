@@ -17,7 +17,15 @@ extern PointCloudXYZI::Ptr feats_down_body; //(new PointCloudXYZI());
 extern PointCloudXYZI::Ptr feats_down_world; //(new PointCloudXYZI());
 extern std::vector<V3D> pbody_list;
 extern std::vector<PointVector> Nearest_Points;
-extern KD_TREE<PointType> ikdtree;
+// Held by pointer, not by value. KD_TREE owns raw nodes, a pthread created with
+// `this`, and six mutexes; it declares a destructor and no assignment operators,
+// which suppresses its implicit MOVE but leaves the implicit COPY. As a value,
+// `ikdtree = std::move(ikdtree_global)` in laserLocalization.cpp therefore
+// resolved to copy assignment: both objects owned one node graph and freed it
+// twice at exit (heap-use-after-free), the pre-lock tree leaked, and 76 MB of
+// Rebuild_Logger was memcpy'd. shared_ptr move-assign transfers ownership for
+// real. Ptr alias comes from ikd_Tree.h.
+extern KD_TREE<PointType>::Ptr ikdtree;
 extern std::vector<float> pointSearchSqDis;
 extern bool point_selected_surf[100000]; // = {0};
 extern std::vector<M3D> crossmat_list;

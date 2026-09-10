@@ -600,28 +600,8 @@ int main(int argc, char **argv) {
         }
         rate.sleep();
     }
-    //--------------------------save map-----------------------------------
-    /* 1. make sure you have enough memories
-       2. noted that pcd save will influence the real-time performences **/
-    if (pcl_wait_save->size() > 0 && pcd_save_en) {
-        // map_file_path empty => upstream default (ROOT_DIR/PCD/scans.pcd,
-        // i.e. inside the source tree). Set it to write somewhere real --
-        // same knob as FAST-LIO's map_file_path.
-        string all_points_dir = map_file_path.empty()
-            ? string(string(ROOT_DIR) + "PCD/scans.pcd")
-            : map_file_path;
-        std::filesystem::path out_path(all_points_dir);
-        if (out_path.has_parent_path()) {
-            std::error_code ec;
-            std::filesystem::create_directories(out_path.parent_path(), ec);
-        }
-        pcl::PCDWriter pcd_writer;
-        pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
-        std::cout << "Point-LIO saved accumulated map (" << pcl_wait_save->size()
-                  << " pts) to " << all_points_dir << std::endl;
-    }
-    fout_out.close();
-    fout_imu_pbp.close();
+    // Save the map if enabled and close the debug logs; see pointlio_core.hpp.
+    shutdown_common();
 
     return 0;
 }

@@ -146,10 +146,10 @@ static rclcpp::Logger this_logger() {
     return node_g ? node_g->get_logger() : rclcpp::get_logger("point_lio_localization");
 }
 
-#include "lio_core.hpp"
+#include "pointlio_core.hpp"
 
 // The estimator core is shared with point_lio_mapping and lives in
-// lio_core.hpp; it used to be duplicated here verbatim. Below: the prior map
+// pointlio_core.hpp; it used to be duplicated here verbatim. Below: the prior map
 // and its ScanContext DB, publish_odometry (which unlike mapping's also emits
 // /localization/pose and diagnostics), the initial-pose search thread, and
 // main().

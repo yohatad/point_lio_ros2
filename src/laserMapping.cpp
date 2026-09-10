@@ -36,11 +36,11 @@ const float MOV_THRESHOLD = 1.5f;
 mutex mtx_buffer;
 condition_variable sig_buffer;
 
-#include "lio_core.hpp"
+#include "pointlio_core.hpp"
 
 // The estimator core -- globals, callbacks, scan/IMU sync, the ikd-Tree map,
 // the measurement models and the cloud/path publishers -- is shared with
-// point_lio_localization and lives in lio_core.hpp. Below: the odometry
+// point_lio_localization and lives in pointlio_core.hpp. Below: the odometry
 // publisher (localization has its own) and main().
 
 

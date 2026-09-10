@@ -141,6 +141,14 @@ void points_cache_collect() // seems for debug
 BoxPointType LocalMap_Points;
 bool Localmap_Initialized = false;
 
+/* True once ikdtree holds the PRIOR map rather than a live one. The localizer
+   sets it at the handover and never clears it; the mapping node leaves it
+   false, so nothing below changes there. While true the tree is READ-ONLY:
+   lasermap_fov_segment() would box-delete prior points permanently, and
+   map_incremental() would merge drifting scans into the very map being
+   localized against. */
+bool map_swapped = false;
+
 /* Keep the local map bounded: slide the cube that follows the sensor and
    box-delete whatever falls out behind it. Cheap because ikd-Tree drops a
    fully-contained subtree in O(1). */
@@ -775,7 +783,9 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
 bool process_scan()
 {
             /*** Segment the map in lidar FOV ***/
-            lasermap_fov_segment();
+            // Only while the tree holds a LIVE map. Against the prior map these
+            // box-deletes are permanent, so a revisited area would find no map.
+            if (!map_swapped) lasermap_fov_segment();
             /*** downsample the feature points in a scan ***/
             t1 = omp_get_wtime();
             if (space_down_sample) {

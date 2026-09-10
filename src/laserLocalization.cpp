@@ -99,7 +99,6 @@ std::vector<Eigen::Matrix4d, Eigen::aligned_allocator<Eigen::Matrix4d>> candidat
 std::mutex candidate_mutex;
 bool global_localization_finish = false;    // a lock has been found
 bool global_update = false;                 // the lock has been APPLIED
-bool map_swapped = false;                   // ikdtree already holds the prior map
 bool keep_searching = true;                 // cleared on shutdown to stop the thread
 bool map_loaded = false;
 int init_count = 0;
@@ -629,42 +628,32 @@ int main(int argc, char **argv) {
                     T_map_now = pending_seed;
                     teleport = true;
                 } else {
-                    std::unique_lock<std::mutex> lk(init_state_mutex);
-                    const bool locked = global_localization_finish;
-                    lk.unlock();
+                    /*** init_result is published BEFORE global_localization_finish
+                     *** under this mutex, so copying both here is the acquire
+                     *** side of that release -- and it keeps /relocalize, which
+                     *** re-arms the search from the executor thread, from
+                     *** republishing init_result midway through this read. ***/
+                    int id = -1;
+                    Eigen::Matrix4d T_cand = Eigen::Matrix4d::Identity();
+                    bool locked = false;
+                    {
+                        std::lock_guard<std::mutex> lk(init_state_mutex);
+                        locked = global_localization_finish;
+                        if (locked) { id = init_result.first; T_cand = init_result.second; }
+                    }
                     if (locked && !global_update) {
-                        /*** The trail is shared with the search thread and is
-                         *** CLEARED by rearm_search() (/relocalize, the health
-                         *** check, the staleness gate below). Reading it
-                         *** unlocked and unchecked is an out-of-range
-                         *** std::vector read whenever a re-arm lands between
-                         *** the search publishing init_result and this line --
-                         *** undefined behaviour that showed up as odometry
-                         *** deltas of up to 1943 m on a robot that had moved a
-                         *** few metres. Validate and copy under the lock. ***/
-                        const int id = init_result.first;
-                        Eigen::Quaterniond q_lock;
-                        V3D p_lock;
-                        bool trail_ok = false;
-                        {
-                            std::lock_guard<std::mutex> flk(init_feats_mutex);
-                            if (id >= 0 && static_cast<size_t>(id) < pose_init.size()
-                                        && static_cast<size_t>(id) < position_init.size()) {
-                                q_lock = pose_init[id];
-                                p_lock = position_init[id];
-                                trail_ok = true;
-                            }
-                        }
-                        if (!trail_ok) {
+                        // odom_at() does the locked, bounds-checked read: the
+                        // trail is cleared by rearm_search() from another
+                        // thread, so an unchecked pose_init[id] is an
+                        // out-of-range vector read.
+                        Eigen::Matrix4d T_odom_lock;
+                        if (!odom_at(id, T_odom_lock)) {
                             RCLCPP_WARN(nh->get_logger(),
                                 "[init] lock references trail entry %d but the trail "
                                 "was re-armed underneath it; discarding.", id);
                             rearm_search();
                             goto teleport_done;
                         }
-                        Eigen::Matrix4d T_odom_lock = Eigen::Matrix4d::Identity();
-                        T_odom_lock.block<3,3>(0,0) = q_lock.toRotationMatrix();
-                        T_odom_lock.block<3,1>(0,3) = p_lock;
                         Eigen::Matrix4d T_odom_now = Eigen::Matrix4d::Identity();
                         if (use_imu_as_input) {
                             T_odom_now.block<3,3>(0,0) = kf_input.x_.rot.normalized().toRotationMatrix();
@@ -673,7 +662,7 @@ int main(int argc, char **argv) {
                             T_odom_now.block<3,3>(0,0) = kf_output.x_.rot.normalized().toRotationMatrix();
                             T_odom_now.block<3,1>(0,3) = kf_output.x_.pos;
                         }
-                        T_map_now = init_result.second * T_odom_lock.inverse() * T_odom_now;
+                        T_map_now = T_cand * T_odom_lock.inverse() * T_odom_now;
                         /*** Staleness gate. The candidate was scored against
                          *** the scan it came from; ScanContext plus two ICP
                          *** passes run slower than the scan rate, so the lock
@@ -747,10 +736,13 @@ int main(int argc, char **argv) {
             // where this loop body used to `continue`.
             if (!process_scan()) continue;
 
-            // Only while still searching. After the lock the prior map is
-            // READ-ONLY: adding live scans would let drift contaminate the very
-            // thing being localized against.
-            if (feats_down_size > 4 && !global_update) {
+            // Gated on map_swapped, NOT global_update. rearm_search() clears
+            // global_update, so gating on it re-opened the prior map for writing
+            // for the whole duration of a /relocalize or auto-relocalize --
+            // merging in exactly the scans whose pose was just declared
+            // untrustworthy. Once the prior map is in the tree it stays
+            // read-only for the life of the process.
+            if (feats_down_size > 4 && !map_swapped) {
                 map_incremental();
             }
 
@@ -779,11 +771,17 @@ int main(int argc, char **argv) {
                     std::lock_guard<std::mutex> flk(init_feats_mutex);
                     position_init.push_back(p_now);
                     pose_init.push_back(q_now);
-                    // Bounded: ScanContext plus two ICP passes is slower than
-                    // the scan rate, so an unbounded queue grows without limit.
-                    if (init_feats_down_bodys.size() < 10) {
-                        init_feats_down_bodys.push({init_count, snapshot});
+                    /*** Bounded, and biased to the NEWEST scans. ScanContext
+                     *** plus two ICP passes are slower than the scan rate, so
+                     *** dropping new arrivals left the search working through
+                     *** the stalest scans in the buffer -- every lock then
+                     *** landed far behind the robot and had to be extrapolated
+                     *** through odometry to be usable. Evict the oldest
+                     *** instead. Depth matches FAST-LIO's 5. ***/
+                    while (init_feats_down_bodys.size() >= 5) {
+                        init_feats_down_bodys.pop();
                     }
+                    init_feats_down_bodys.push({init_count, snapshot});
                     init_count++;
                 }
             }

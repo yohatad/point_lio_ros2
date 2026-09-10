@@ -157,6 +157,28 @@ static rclcpp::Logger this_logger() {
 // /localization/pose and diagnostics), the initial-pose search thread, and
 // main().
 
+/* IMU <- lidar. Read from the filter state ONLY when the filter is actually
+   estimating the extrinsic: pointlio_core.hpp seeds offset_R_L_I/offset_T_L_I
+   under extrinsic_est_en and leaves them identity/zero otherwise, so reading
+   them unconditionally silently substitutes identity for a real mount. Same
+   rule pointBodyLidarToIMU() and the h_model loop use. */
+static Eigen::Matrix4d imu_T_lidar()
+{
+    Eigen::Matrix4d T = Eigen::Matrix4d::Identity();
+    if (extrinsic_est_en) {
+        if (use_imu_as_input) {
+            T.block<3,3>(0,0) = kf_input.x_.offset_R_L_I.normalized().toRotationMatrix();
+            T.block<3,1>(0,3) = kf_input.x_.offset_T_L_I;
+        } else {
+            T.block<3,3>(0,0) = kf_output.x_.offset_R_L_I.normalized().toRotationMatrix();
+            T.block<3,1>(0,3) = kf_output.x_.offset_T_L_I;
+        }
+    } else {
+        T.block<3,3>(0,0) = Lidar_R_wrt_IMU;
+        T.block<3,1>(0,3) = Lidar_T_wrt_IMU;
+    }
+    return T;
+}
 
 /* Publish the tracked pose. Unlike the mapping node's, this also broadcasts
    map -> tf_child_frame and emits /localization/pose in that frame, with the
@@ -611,10 +633,38 @@ int main(int argc, char **argv) {
                     const bool locked = global_localization_finish;
                     lk.unlock();
                     if (locked && !global_update) {
+                        /*** The trail is shared with the search thread and is
+                         *** CLEARED by rearm_search() (/relocalize, the health
+                         *** check, the staleness gate below). Reading it
+                         *** unlocked and unchecked is an out-of-range
+                         *** std::vector read whenever a re-arm lands between
+                         *** the search publishing init_result and this line --
+                         *** undefined behaviour that showed up as odometry
+                         *** deltas of up to 1943 m on a robot that had moved a
+                         *** few metres. Validate and copy under the lock. ***/
                         const int id = init_result.first;
+                        Eigen::Quaterniond q_lock;
+                        V3D p_lock;
+                        bool trail_ok = false;
+                        {
+                            std::lock_guard<std::mutex> flk(init_feats_mutex);
+                            if (id >= 0 && static_cast<size_t>(id) < pose_init.size()
+                                        && static_cast<size_t>(id) < position_init.size()) {
+                                q_lock = pose_init[id];
+                                p_lock = position_init[id];
+                                trail_ok = true;
+                            }
+                        }
+                        if (!trail_ok) {
+                            RCLCPP_WARN(nh->get_logger(),
+                                "[init] lock references trail entry %d but the trail "
+                                "was re-armed underneath it; discarding.", id);
+                            rearm_search();
+                            goto teleport_done;
+                        }
                         Eigen::Matrix4d T_odom_lock = Eigen::Matrix4d::Identity();
-                        T_odom_lock.block<3,3>(0,0) = pose_init[id].toRotationMatrix();
-                        T_odom_lock.block<3,1>(0,3) = position_init[id];
+                        T_odom_lock.block<3,3>(0,0) = q_lock.toRotationMatrix();
+                        T_odom_lock.block<3,1>(0,3) = p_lock;
                         Eigen::Matrix4d T_odom_now = Eigen::Matrix4d::Identity();
                         if (use_imu_as_input) {
                             T_odom_now.block<3,3>(0,0) = kf_input.x_.rot.normalized().toRotationMatrix();
@@ -624,10 +674,37 @@ int main(int argc, char **argv) {
                             T_odom_now.block<3,1>(0,3) = kf_output.x_.pos;
                         }
                         T_map_now = init_result.second * T_odom_lock.inverse() * T_odom_now;
-                        teleport = true;
+                        /*** Staleness gate. The candidate was scored against
+                         *** the scan it came from; ScanContext plus two ICP
+                         *** passes run slower than the scan rate, so the lock
+                         *** lands SECONDS later and the line above extrapolates
+                         *** it through Point-LIO's own odometry over that gap.
+                         *** MEASURED on slam_20260823_aligned: with the robot
+                         *** 0.02 m from the lock scan the extrapolated pose
+                         *** scored 74% overlap, but at 21 m it scored 0% -- a
+                         *** candidate that is right about where the robot WAS
+                         *** and wrong about where it IS. Re-score the pose we
+                         *** are about to jump to, and re-arm rather than commit
+                         *** a lock the map does not support. ***/
+                        const double ov_now = (feats_down_size > 4)
+                            ? map_overlap(feats_down_body, T_map_now * imu_T_lidar())
+                            : 1.0;   // too few points to judge; let it through
+                        if (ov_now < init_min_overlap) {
+                            RCLCPP_WARN(nh->get_logger(),
+                                "[init] discarding stale lock: %.0f%% overlap after "
+                                "extrapolating %.2f m of odometry since the matched "
+                                "scan (need %.0f%%). Re-arming the search.",
+                                100.0 * ov_now,
+                                (T_odom_now.block<3,1>(0,3) - T_odom_lock.block<3,1>(0,3)).norm(),
+                                100.0 * init_min_overlap);
+                            rearm_search();
+                        } else {
+                            teleport = true;
+                        }
                     }
                 }
 
+                teleport_done:
                 if (teleport) {
                     const M3D R_new = T_map_now.block<3,3>(0,0);
                     if (use_imu_as_input) {
@@ -720,18 +797,14 @@ int main(int argc, char **argv) {
                 if ((now_t - last_health_check).seconds() >= health_check_period) {
                     last_health_check = now_t;
                     Eigen::Matrix4d T_body_now = Eigen::Matrix4d::Identity();
-                    Eigen::Matrix4d T_i_l = Eigen::Matrix4d::Identity();
                     if (use_imu_as_input) {
                         T_body_now.block<3,3>(0,0) = kf_input.x_.rot.normalized().toRotationMatrix();
                         T_body_now.block<3,1>(0,3) = kf_input.x_.pos;
-                        T_i_l.block<3,3>(0,0) = kf_input.x_.offset_R_L_I.normalized().toRotationMatrix();
-                        T_i_l.block<3,1>(0,3) = kf_input.x_.offset_T_L_I;
                     } else {
                         T_body_now.block<3,3>(0,0) = kf_output.x_.rot.normalized().toRotationMatrix();
                         T_body_now.block<3,1>(0,3) = kf_output.x_.pos;
-                        T_i_l.block<3,3>(0,0) = kf_output.x_.offset_R_L_I.normalized().toRotationMatrix();
-                        T_i_l.block<3,1>(0,3) = kf_output.x_.offset_T_L_I;
                     }
+                    const Eigen::Matrix4d T_i_l = imu_T_lidar();
                     const double ov = map_overlap(feats_down_body, T_body_now * T_i_l);
                     std_msgs::msg::Float32 ov_msg;
                     ov_msg.data = static_cast<float>(ov);

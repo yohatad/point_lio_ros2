@@ -11,6 +11,17 @@
 
 extern bool odom_only;
 extern std::string odom_header_frame_id;
+// What the world-frame cloud/path publishers actually stamp. Equals
+// odom_header_frame_id for point_lio_mapping (set once). point_lio_localization
+// mirrors /Odometry's frame_id every scan: before a lock the filter's world is
+// its own mount-tilted frame, and a cloud claiming the map frame there renders
+// visibly rotated under RViz's Fixed Frame.
+extern std::string world_pub_frame;
+// When >= 0, publish_frame_world stamps every point with this intensity.
+// point_lio_localization uses it to carry lock state into the visualization
+// (RViz colours by a channel, not by topic state): 0 = searching, 100 = locked,
+// mapped red -> green in the rviz config. Negative = true sensor intensity.
+extern float world_pub_intensity;
 extern std::string odom_child_frame_id;
 // frame_id stamped on /cloud_registered_body. Upstream hardcoded this to
 // "body"; made configurable (matching FAST-LIO's publish.body_frame) because

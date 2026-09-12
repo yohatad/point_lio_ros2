@@ -117,11 +117,12 @@ void global_localization_thread(rclcpp::Logger log)
     rclcpp::Rate rate(20);
     while (rclcpp::ok())
     {
-        bool already_locked, keep_going;
+        bool already_locked, keep_going, halted;
         {
             std::lock_guard<std::mutex> lk(init_state_mutex);
             already_locked = global_localization_finish;
             keep_going = keep_searching;
+            halted = search_halted;
         }
         // on_deactivate() sets this false and joins us -- exit promptly rather
         // than idle-sleeping through a lifecycle transition that's waiting on us.
@@ -130,6 +131,9 @@ void global_localization_thread(rclcpp::Logger log)
         // so returning here would make relocalization impossible for the life
         // of the process.
         if (already_locked) { rate.sleep(); continue; }
+        // Out of attempts (record_relock_attempt): idle until an operator
+        // calls /initialpose or /relocalize.
+        if (halted) { rate.sleep(); continue; }
         if (!map_loaded) { rate.sleep(); continue; }
 
         auto candidate_count = []() {
@@ -205,25 +209,6 @@ void global_localization_thread(rclcpp::Logger log)
                             match_id, 100.0 * ov, 100.0 * init_min_overlap);
                 continue;
             }
-            // Motion gate: the new candidate must come from a scan the robot
-            // has actually travelled from, or it is not independent evidence.
-            int oldest_id = -1;
-            {
-                std::lock_guard<std::mutex> lk(candidate_mutex);
-                if (!candidate_ids.empty()) oldest_id = candidate_ids.front();
-            }
-            if (init_require_motion && oldest_id != -1) {
-                Eigen::Matrix4d T0, Tn;
-                if (!odom_at(oldest_id, T0) || !odom_at(item.first, Tn)) continue;
-                const double moved =
-                    (Tn.block<3,1>(0,3) - T0.block<3,1>(0,3)).norm();
-                if (moved < init_motion_min) {
-                    RCLCPP_INFO(log, "[init] holding: only %.2f m travelled since "
-                                     "the oldest kept estimate (need %.2f) -- move the robot",
-                                moved, init_motion_min);
-                    continue;
-                }
-            }
             int kept_count;
             {
                 std::lock_guard<std::mutex> lk(candidate_mutex);
@@ -256,8 +241,11 @@ void global_localization_thread(rclcpp::Logger log)
         //     predicted_0 = pose_i * T_odom(id_i)^-1 * T_odom(id_0)
         double spread = 0.0;
         for (size_t i = 1; i < poses.size(); ++i) {
+            // ALWAYS, not conditionally: a moving robot covers real distance
+            // between the two estimates whatever the settings say, and
+            // uncompensated that distance counted against a CORRECT pair.
             Eigen::Matrix4d Pi = poses[i];
-            if (init_require_motion) {
+            {
                 Eigen::Matrix4d T0, Ti;
                 if (odom_at(ids[0], T0) && odom_at(ids[i], Ti)) {
                     Pi = poses[i] * Ti.inverse() * T0;
@@ -313,8 +301,28 @@ void global_localization_thread(rclcpp::Logger log)
 /*** Shared by /relocalize and the auto-relocalize path: drop the odometry
  *** trail and the candidate window, and stand the current lock down so
  *** global_localization_thread starts over. ***/
+/*** A candidate failed VERIFICATION. Unlike rearm_search this KEEPS the
+ *** odometry trail and the queued scans: the candidate was never applied, so
+ *** the filter never moved and the trail entries a later candidate indexes by
+ *** id are all still valid. Dropping them made every rejection cost a full
+ *** rebuild before the search could even resume. ***/
+void reject_candidate()
+{
+    lock_verify_passes = 0;
+    {
+        std::lock_guard<std::mutex> lk(candidate_mutex);
+        candidate_ids.clear();
+        candidate_poses.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lk(init_state_mutex);
+        global_localization_finish = false;   // search resumes immediately
+    }
+}
+
 void rearm_search()
 {
+    lock_verify_passes = 0;
     {
         std::lock_guard<std::mutex> lk(init_feats_mutex);
         std::queue<std::pair<int, PointCloudXYZI::Ptr>> empty;
@@ -333,6 +341,18 @@ void rearm_search()
         global_localization_finish = false;
     }
     global_update = false;
+
+    // Give the filter a LIVE map again. After a handover the tree IS the
+    // read-only prior map, so a filter just declared lost had no map of its
+    // own: it coasted on IMU or matched the prior map from the wrong pose, and
+    // the next lock inherited that error. A fresh tree is rebuilt from the
+    // next scan, and map_incremental runs on it until the next lock shares the
+    // prior map back in.
+    if (map_swapped) {
+        ikdtree = KD_TREE<PointType>::Ptr(new KD_TREE<PointType>());
+        map_swapped = false;
+        init_map = false;      // let Point-LIO build its own again
+    }
 }
 
 /*** Publish one /diagnostics status: whether a lock is held, and the current

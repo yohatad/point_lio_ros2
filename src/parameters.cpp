@@ -2,6 +2,8 @@
 
 bool odom_only;
 std::string odom_header_frame_id, odom_child_frame_id;
+std::string world_pub_frame;
+float world_pub_intensity = -1.0f;
 std::string body_frame;
 std::string map_file_path;
 
@@ -102,6 +104,7 @@ void readParameters(shared_ptr<rclcpp::Node> &nh) {
     // 使用get_parameter方法获取参数值
     nh->get_parameter("odom_only", odom_only);
     nh->get_parameter("odom_header_frame_id", odom_header_frame_id);
+    world_pub_frame = odom_header_frame_id;   // mapping keeps this; localization overrides per scan
     nh->get_parameter("odom_child_frame_id", odom_child_frame_id);
 
     nh->get_parameter("prop_at_freq_of_imu", prop_at_freq_of_imu);

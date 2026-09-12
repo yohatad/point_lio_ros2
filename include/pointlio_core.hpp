@@ -456,7 +456,7 @@ void publish_init_kdtree(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>:
     pcl::toROSMsg(*laserCloudInit, laserCloudmsg);
 
     laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
-    laserCloudmsg.header.frame_id = odom_header_frame_id;
+    laserCloudmsg.header.frame_id = world_pub_frame;
     if (!odom_only) {
         pubLaserCloudFullRes->publish(laserCloudmsg);
     }
@@ -483,14 +483,16 @@ void publish_frame_world(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>:
             laserCloudWorld->points[i].x = feats_down_world->points[i].x;
             laserCloudWorld->points[i].y = feats_down_world->points[i].y;
             laserCloudWorld->points[i].z = feats_down_world->points[i].z;
-            laserCloudWorld->points[i].intensity = feats_down_world->points[i].intensity; // feats_down_world->points[i].y; // 
+            laserCloudWorld->points[i].intensity =
+                world_pub_intensity >= 0.0f ? world_pub_intensity
+                                            : feats_down_world->points[i].intensity;
             // }
         }
         sensor_msgs::msg::PointCloud2 laserCloudmsg;
         pcl::toROSMsg(*laserCloudWorld, laserCloudmsg);
 
         laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
-        laserCloudmsg.header.frame_id = odom_header_frame_id;
+        laserCloudmsg.header.frame_id = world_pub_frame;
         pubLaserCloudFullRes->publish(laserCloudmsg);
         publish_count -= PUBFRAME_PERIOD;
     }
@@ -598,7 +600,7 @@ void publish_path(const rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr &pubPa
     set_posestamp(msg_body_pose.pose);
     // msg_body_pose.header.stamp = ros::Time::now();
     msg_body_pose.header.stamp = get_ros_time(lidar_end_time);
-    msg_body_pose.header.frame_id = odom_header_frame_id;
+    msg_body_pose.header.frame_id = world_pub_frame;
     static int jjj = 0;
     jjj++;
     // if (jjj % 2 == 0) // if path is too large, the rvis will crash
@@ -648,7 +650,7 @@ void setup_common(const std::shared_ptr<rclcpp::Node> &nh)
     cout << "lidar_type: " << lidar_type << endl;
 
     path.header.stamp = get_ros_time(lidar_end_time);
-    path.header.frame_id = odom_header_frame_id;
+    path.header.frame_id = world_pub_frame;
 
     /*** variables definition for counting ***/
 

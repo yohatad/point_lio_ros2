@@ -148,7 +148,7 @@ int    relock_attempts = 0;
 int    max_relock_attempts = 2;
 // Metres/second the platform cannot exceed (a Pepper does ~0.55). Above this
 // the estimate is broken whatever produced it.
-double max_speed = 1.0;
+double max_speed = 2.0;
 // Covariance pos/rot are reset to at a handover, m^2 and rad^2 (~0.7 m /
 // ~11 deg one-sigma). change_x() alone leaves P at the pre-jump track's
 // confidence, so the filter resists the map correcting whatever error
@@ -435,18 +435,21 @@ void apply_map_pose(const Eigen::Matrix4d &T_map_now)
 void current_body_and_extrinsic(Eigen::Matrix4d &T_body, Eigen::Matrix4d &T_i_l)
 {
     T_body = Eigen::Matrix4d::Identity();
-    T_i_l  = Eigen::Matrix4d::Identity();
     if (use_imu_as_input) {
         T_body.block<3,3>(0,0) = kf_input.x_.rot.normalized().toRotationMatrix();
         T_body.block<3,1>(0,3) = kf_input.x_.pos;
-        T_i_l.block<3,3>(0,0) = kf_input.x_.offset_R_L_I.normalized().toRotationMatrix();
-        T_i_l.block<3,1>(0,3) = kf_input.x_.offset_T_L_I;
     } else {
         T_body.block<3,3>(0,0) = kf_output.x_.rot.normalized().toRotationMatrix();
         T_body.block<3,1>(0,3) = kf_output.x_.pos;
-        T_i_l.block<3,3>(0,0) = kf_output.x_.offset_R_L_I.normalized().toRotationMatrix();
-        T_i_l.block<3,1>(0,3) = kf_output.x_.offset_T_L_I;
     }
+    // Through imu_T_lidar(), NOT the raw state: with extrinsic_est_en false
+    // (the rsimu config) Point-LIO leaves offset_R_L_I/offset_T_L_I at
+    // identity/zero, so reading them here scored the live scan at the IMU
+    // pose instead of the lidar pose -- a full mount rotation off. MEASURED:
+    // every candidate admitted at 76-81% then "verified" at 19-49% and was
+    // rejected, and the node never locked. FAST_LIO does not hit this because
+    // its filter seeds the extrinsic regardless of the flag.
+    T_i_l = imu_T_lidar();
 }
 
 double current_speed()
@@ -621,7 +624,7 @@ int main(int argc, char **argv) {
     nh->get_parameter("localization.no_match_duration", no_match_duration);
     nh->declare_parameter<int>("localization.max_relock_attempts", 2);
     nh->get_parameter("localization.max_relock_attempts", max_relock_attempts);
-    nh->declare_parameter<double>("localization.max_speed", 1.0);
+    nh->declare_parameter<double>("localization.max_speed", 2.0);
     nh->get_parameter("localization.max_speed", max_speed);
     nh->declare_parameter<double>("localization.seed_pos_cov", 0.5);
     nh->get_parameter("localization.seed_pos_cov", seed_pos_cov);

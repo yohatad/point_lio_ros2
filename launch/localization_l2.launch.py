@@ -90,7 +90,13 @@ def generate_launch_description():
             description='Locks claimed and then lost before the automatic '
                         'search gives up and waits for a manual /initialpose. '
                         '0 retries forever.'),
-        DeclareLaunchArgument('max_speed', default_value='1.0',
+        # 2.0 here, not fast_lio's 1.0. Point-LIO's per-point update gives a
+        # noisier velocity than FAST-LIO's scan-batched one: MEASURED on a
+        # healthy, 100%-overlap lock, the guard fired 6 times at 1.0-1.1 m/s
+        # with 250-670 effective points -- a tracking filter, not a diverging
+        # one -- each a needless kick to a good state. 2.0 sits above that
+        # noise and still far below the 3.9-5 m/s a genuine runaway shows.
+        DeclareLaunchArgument('max_speed', default_value='2.0',
             description="Metres/second the platform cannot exceed (Pepper is "
                         "~0.55). Above it the estimate is diverging, not "
                         "moving, and velocity plus the IMU states are zeroed."),

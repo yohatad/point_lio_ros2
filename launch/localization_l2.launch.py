@@ -21,7 +21,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -137,7 +137,9 @@ def generate_launch_description():
         package='point_lio', executable='pointlio_localization',
         name='point_lio_localization', output='screen',
         parameters=[
-            os.path.join(share, 'config', 'l2lidar_rsimu.yaml'),
+            # config_file, not a hardcoded name: the argument was declared and
+            # then ignored, so passing it silently did nothing.
+            PathJoinSubstitution([share, 'config', LaunchConfiguration('config_file')]),
             {'use_sim_time': LaunchConfiguration('use_sim_time'),
              'publish.tf_child_frame': LaunchConfiguration('tf_child_frame'),
              # After the lock the estimate is in the prior map's frame, so the

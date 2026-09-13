@@ -7,6 +7,11 @@
 
 /**:
     ros__parameters:
+        # Match the prior map's 0.25 m floor, as in l2lidar_rsimu.yaml. Unset,
+        # parameters.cpp defaults both to 0.5 -- coarser than the map itself,
+        # which left ~300 points per scan and the filter walked off the map.
+        filter_size_surf: 0.25
+        filter_size_map: 0.25
         common:
             lid_topic: "/points"        # input PointCloud2 topic
             imu_topic: "/imu/data"      # input Imu topic; subscribed RELIABLE, so bag replay needs config/play_qos.yaml

@@ -103,7 +103,11 @@ def generate_launch_description():
             'config', LaunchConfiguration('config_file')
         ]),
         {
-            'use_imu_as_input': True,  # input model (FAST-LIO-style propagation): more robust to the L2's vibration-heavy IMU than the output model
+            # Output model (IMU as measurement, Point-LIO's native mode). A/B on
+            # slam_20260823 vs the input model: APE 1.06 -> 0.31 m, RPE 4.9 -> 1.0 %/10 m.
+            # The earlier note that the input model was more robust to the L2's
+            # IMU predates the RealSense-IMU config; re-check if l2lidar_node.yaml is used.
+            'use_imu_as_input': False,
             'prop_at_freq_of_imu': True,
             'check_satu': True,
             'init_map_size': 10,

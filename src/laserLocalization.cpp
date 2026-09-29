@@ -233,6 +233,46 @@ static Eigen::Matrix4d imu_T_lidar()
     return T;
 }
 
+/*** Resolve the STATIC body -> tf_child extrinsic, once, and cache it.
+ ***
+ *** Called from publish_odometry() and from the /initialpose handler, so
+ *** /initialpose works before the first lock even though publish_odometry()
+ *** broadcasts nothing map-frame until then. Until the lookup succeeds nothing
+ *** is broadcast at all -- a map -> base edge computed from a missing extrinsic
+ *** would be silently wrong rather than absent. ***/
+bool resolve_tf_child()
+{
+    if (tf_child_resolved) return true;
+    // No distinct child frame: the filter's body frame is already the target.
+    if (tf_child_frame.empty() || tf_child_frame == odom_child_frame_id) {
+        R_body_to_tfchild = Eye3d;
+        t_body_to_tfchild = V3D(0, 0, 0);
+        tf_child_resolved = true;
+        return true;
+    }
+    if (!tf_buffer_g) return false;
+    try {
+        auto tfs = tf_buffer_g->lookupTransform(
+            odom_child_frame_id, tf_child_frame, tf2::TimePointZero);
+        const auto &q = tfs.transform.rotation;
+        const auto &v = tfs.transform.translation;
+        Eigen::Quaterniond eq(q.w, q.x, q.y, q.z);
+        R_body_to_tfchild = eq.toRotationMatrix();
+        t_body_to_tfchild = V3D(v.x, v.y, v.z);
+        tf_child_resolved = true;
+        return true;
+    } catch (const tf2::TransformException &ex) {
+        // Throttled, not silent: the only visible effect of returning quietly
+        // here is nav2 waiting forever for a map frame that never arrives.
+        RCLCPP_WARN_THROTTLE(this_logger(), *node_g->get_clock(), 5000,
+            "cannot resolve %s -> %s yet (%s); NOT broadcasting %s -> %s "
+            "until it does",
+            odom_child_frame_id.c_str(), tf_child_frame.c_str(), ex.what(),
+            odom_header_frame_id.c_str(), tf_child_frame.c_str());
+        return false;
+    }
+}
+
 /* Publish the tracked pose. Unlike the mapping node's, this also broadcasts
    map -> tf_child_frame and emits /localization/pose in that frame, with the
    twist corrected for the lever arm between the IMU and the robot base. */
@@ -291,33 +331,19 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
     // would give it TWO parents and split the tree, so compose the static
     // body -> child extrinsic out and broadcast map -> child instead.
     //
-    // Resolved ONCE and cached: it is static, and until the lookup succeeds
-    // nothing is broadcast at all -- a map -> base edge computed from a missing
-    // extrinsic would be silently wrong rather than absent.
+    // Resolved BEFORE the lock gate below: /initialpose hard-rejects until
+    // tf_child_resolved, and before a lock is exactly when it is needed.
+    if (!resolve_tf_child()) return;
+
+    // Everything below claims the pose is IN THE MAP, so it waits for an
+    // applied lock. Before the handover -- and again after a re-arm -- the
+    // filter is in lio_init, anchored wherever the run started; broadcasting
+    // that as map -> base_footprint drew the robot at the map origin and
+    // handed nav2 an unregistered pose. FAST-LIO's localizer already had this
+    // gate; this node did not.
+    if (!global_update) return;
+
     if (!tf_child_frame.empty() && tf_child_frame != odom_child_frame_id) {
-        if (!tf_child_resolved) {
-            if (!tf_buffer_g) return;
-            try {
-                auto tfs = tf_buffer_g->lookupTransform(
-                    odom_child_frame_id, tf_child_frame, tf2::TimePointZero);
-                const auto &q = tfs.transform.rotation;
-                const auto &v = tfs.transform.translation;
-                Eigen::Quaterniond eq(q.w, q.x, q.y, q.z);
-                R_body_to_tfchild = eq.toRotationMatrix();
-                t_body_to_tfchild = V3D(v.x, v.y, v.z);
-                tf_child_resolved = true;
-            } catch (const tf2::TransformException &ex) {
-                // Throttled, not silent: the only visible effect of returning
-                // quietly here is nav2 waiting forever for a map frame that is
-                // never going to arrive.
-                RCLCPP_WARN_THROTTLE(this_logger(), *node_g->get_clock(), 5000,
-                    "cannot resolve %s -> %s yet (%s); NOT broadcasting %s -> %s "
-                    "until it does",
-                    odom_child_frame_id.c_str(), tf_child_frame.c_str(), ex.what(),
-                    odom_header_frame_id.c_str(), tf_child_frame.c_str());
-                return;
-            }
-        }
         const Eigen::Quaterniond q_mb(odomAftMapped.pose.pose.orientation.w,
                                       odomAftMapped.pose.pose.orientation.x,
                                       odomAftMapped.pose.pose.orientation.y,
@@ -351,7 +377,7 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
     // rather than the mast IMU, so a consumer that assumes child_frame_id is
     // the robot base reads the right thing. nav2_params_pointloc.yaml points
     // bt_navigator's odom_topic at this.
-    if (pub_localization_g && tf_child_resolved) {
+    if (pub_localization_g) {
         nav_msgs::msg::Odometry loc;
         loc.header = odomAftMapped.header;
         loc.child_frame_id = tf_child_frame;
@@ -800,7 +826,7 @@ int main(int argc, char **argv) {
     auto sub_initialpose = nh->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
         "/initialpose", 1,
         [](const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg) {
-            if (!map_loaded || !tf_child_resolved) {
+            if (!map_loaded || !resolve_tf_child()) {
                 RCLCPP_WARN(this_logger(),
                     "/initialpose ignored: map or body->%s extrinsic not ready yet",
                     tf_child_frame.c_str());

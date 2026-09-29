@@ -132,6 +132,14 @@
             path_en: true
             scan_publish_en: true
             scan_bodyframe_pub_en: true
+            # TEST_PLAN_map_odom.md diagnostic: default 0.05s TF lookup
+            # timeout for the odom -> base_footprint sample at the scan stamp
+            # caused a growing series of "map -> odom step ... held" warnings
+            # on slam_20260823_aligned bag replay in fast_lio's identical
+            # map_odom.hpp mechanism (naoqi host-time skew on /pepper_odom is
+            # the suspected cause). Applying the same widened value here
+            # preemptively; revert if this doesn't help.
+            odom_lookup_timeout: 0.1
             # CHANGED from l2lidar_frame_imu: the estimated body is now the
             # camera's IMU. sensor_tf.yaml already publishes the full chain
             # base_footprint -> l2lidar_frame -> camera_camera_link ->

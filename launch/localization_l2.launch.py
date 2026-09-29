@@ -57,6 +57,11 @@ def generate_launch_description():
         DeclareLaunchArgument('tf_child_frame', default_value='base_footprint',
             description='Child of the broadcast map edge. The body->child '
                         'extrinsic is read from /tf_static once and cached.'),
+        DeclareLaunchArgument('odom_frame', default_value='',
+            description='Empty (default): broadcast map -> tf_child_frame. '
+                        'Set to "odom" to broadcast map -> odom instead '
+                        '(REP-105); odom -> tf_child_frame must then come from '
+                        'pepper_slam wheel_odom_tf.py.'),
         # MUST match the config's publish.body_frame: the map -> base edge is
         # composed through body -> base, so a mismatched body frame either
         # fails to resolve (no TF at all) or composes through the wrong mount.
@@ -142,6 +147,8 @@ def generate_launch_description():
             PathJoinSubstitution([share, 'config', LaunchConfiguration('config_file')]),
             {'use_sim_time': LaunchConfiguration('use_sim_time'),
              'publish.tf_child_frame': LaunchConfiguration('tf_child_frame'),
+             'publish.odom_frame': ParameterValue(
+                 LaunchConfiguration('odom_frame'), value_type=str),
              # After the lock the estimate is in the prior map's frame, so the
              # published header frame is 'map', not Point-LIO's own start frame.
              'odom_header_frame_id': 'map',

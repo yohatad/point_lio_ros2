@@ -57,6 +57,7 @@
 #include <tf2_ros/static_transform_broadcaster.h>
 #include <geometry_msgs/msg/vector3.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
+#include "map_odom.hpp"
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <std_msgs/msg/float32.hpp>
@@ -179,6 +180,11 @@ std::string tf_child_frame;
 // were map-registered. Matches the mapping stack's name for the same concept.
 std::string odom_init_frame = "lio_init";
 std::shared_ptr<tf2_ros::StaticTransformBroadcaster> static_tf_broadcaster_g;
+// map -> odom (REP-105), opt-in via publish.odom_frame; see map_odom.hpp. Off
+// by default: the legacy map -> base_footprint edge is unchanged until a
+// launch file sets odom_frame.
+map_odom::Params map_odom_params;
+map_odom::Gate   map_odom_gate;
 bool  tf_child_resolved = false;
 M3D   R_body_to_tfchild(Eye3d);
 V3D   t_body_to_tfchild(0, 0, 0);
@@ -371,7 +377,12 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
         transform.transform.rotation = odomAftMapped.pose.pose.orientation;
     }
 
-    tf_br->sendTransform(transform);
+    if (map_odom_params.odom_frame.empty()) {
+        tf_br->sendTransform(transform);
+    } else if (tf_buffer_g) {
+        map_odom::publish(transform, map_odom_params, map_odom_gate, *tf_buffer_g,
+                          *tf_br, this_logger(), *node_g->get_clock());
+    }
 
     // /localization/pose -- the SAME pose, but genuinely in tf_child_frame
     // rather than the mast IMU, so a consumer that assumes child_frame_id is
@@ -602,6 +613,7 @@ void verify_and_apply_lock()
     global_update = true;
     has_ever_locked = true;
     lock_verify_passes = 0;
+    map_odom_gate.reset();   // a deliberate move, not a glitch
     RCLCPP_INFO(this_logger(),
         "Localized: filter is now in the map frame at x=%.2f y=%.2f z=%.2f "
         "(verified over %d scans, %.0f%% overlap); prior map is read-only "
@@ -680,6 +692,21 @@ int main(int argc, char **argv) {
     nh->get_parameter("localization.health_bad_duration", health_bad_duration);
     nh->get_parameter("localization.health_check_period", health_check_period);
     nh->get_parameter("publish.tf_child_frame", tf_child_frame);
+    // map -> odom instead of map -> tf_child_frame; see map_odom.hpp.
+    nh->declare_parameter<std::string>("publish.odom_frame", "");
+    nh->declare_parameter<bool>("publish.odom_planar", true);
+    nh->declare_parameter<double>("publish.odom_lookup_timeout", 0.05);
+    nh->declare_parameter<double>("publish.odom_future_dating", 0.2);
+    nh->declare_parameter<double>("publish.odom_max_step_lin", 0.30);
+    nh->declare_parameter<double>("publish.odom_max_step_ang", 0.175);
+    nh->declare_parameter<double>("publish.odom_max_hold", 2.0);
+    nh->get_parameter("publish.odom_frame", map_odom_params.odom_frame);
+    nh->get_parameter("publish.odom_planar", map_odom_params.planar);
+    nh->get_parameter("publish.odom_lookup_timeout", map_odom_params.lookup_timeout);
+    nh->get_parameter("publish.odom_future_dating", map_odom_params.future_dating);
+    nh->get_parameter("publish.odom_max_step_lin", map_odom_params.max_step_lin);
+    nh->get_parameter("publish.odom_max_step_ang", map_odom_params.max_step_ang);
+    nh->get_parameter("publish.odom_max_hold", map_odom_params.max_hold);
     if (map_pose_file_param.empty()) map_pose_file_param = "pose.json";
     if (map_scan_dir_param.empty()) map_scan_dir_param = map_dir_param + "/pcd";
     // Frames. After the handover the filter state IS the prior map's pose, so
@@ -968,6 +995,7 @@ int main(int argc, char **argv) {
                 has_ever_locked = true;
                 lock_verify_passes = 0;
                 relock_attempts = 0;
+                map_odom_gate.reset();   // a deliberate move, not a glitch
                 {
                     std::lock_guard<std::mutex> lk(init_state_mutex);
                     search_halted = false;

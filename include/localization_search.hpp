@@ -376,5 +376,13 @@ void publish_diagnostic(uint8_t level, const std::string &message,
     diagnostic_msgs::msg::DiagnosticArray arr;
     arr.header.stamp = node_g->get_clock()->now();
     arr.status.push_back(status);
+    // The map -> odom gate rides along, so one watchdog sees both. Only in
+    // odom mode: a permanently-OK status for an inactive feature is noise.
+    if (!map_odom_params.odom_frame.empty()) {
+        arr.status.push_back(map_odom::gate_status(
+            map_odom_gate, rclcpp::Time(arr.header.stamp).seconds(),
+            map_odom_params, "point_lio_localization: map -> odom gate",
+            "point_lio_localization"));
+    }
     pub_diag_g->publish(arr);
 }

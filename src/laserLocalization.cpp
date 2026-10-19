@@ -702,7 +702,11 @@ int main(int argc, char **argv) {
     // map -> odom instead of map -> tf_child_frame; see map_odom.hpp.
     nh->declare_parameter<std::string>("publish.odom_frame", "");
     nh->declare_parameter<bool>("publish.odom_planar", true);
-    nh->declare_parameter<double>("publish.odom_lookup_timeout", 0.05);
+    nh->declare_parameter<double>("publish.odom_lookup_timeout",
+                                  map_odom_params.lookup_timeout);
+    // s the gate status stays ERROR after a forced adopt; 0 = report-only.
+    nh->declare_parameter<double>("publish.odom_gate_error_latch",
+                                  map_odom_params.error_latch);
     nh->declare_parameter<double>("publish.odom_future_dating", 0.2);
     nh->declare_parameter<double>("publish.odom_max_step_lin", 0.30);
     nh->declare_parameter<double>("publish.odom_max_step_ang", 0.175);
@@ -710,6 +714,7 @@ int main(int argc, char **argv) {
     nh->get_parameter("publish.odom_frame", map_odom_params.odom_frame);
     nh->get_parameter("publish.odom_planar", map_odom_params.planar);
     nh->get_parameter("publish.odom_lookup_timeout", map_odom_params.lookup_timeout);
+    nh->get_parameter("publish.odom_gate_error_latch", map_odom_params.error_latch);
     nh->get_parameter("publish.odom_future_dating", map_odom_params.future_dating);
     nh->get_parameter("publish.odom_max_step_lin", map_odom_params.max_step_lin);
     nh->get_parameter("publish.odom_max_step_ang", map_odom_params.max_step_ang);

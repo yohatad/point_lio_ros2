@@ -23,9 +23,11 @@
 #pragma once
 
 #include <cmath>
+#include <cstdio>
 #include <string>
 
 #include <Eigen/Geometry>
+#include <diagnostic_msgs/msg/diagnostic_status.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <tf2/exceptions.h>
@@ -40,11 +42,17 @@ struct Params
 {
     std::string odom_frame;        // "" => legacy map -> base_footprint
     bool   planar = true;          // compose in x, y, yaw only (wheel odom is planar)
-    double lookup_timeout = 0.05;  // s to wait for odom -> base at the scan stamp
+    // MEASURED: 0.05 left "held" warnings on slam_20260823_aligned; 0.1 passed
+    // (TEST_PLAN_map_odom.md tests 3-4). Longer than the ~90 ms scan period, so
+    // a full-length wait costs a scan -- see odom_misses in the gate status.
+    double lookup_timeout = 0.1;   // s to wait for odom -> base at the scan stamp
     double future_dating = 0.2;    // s added to the stamp, as AMCL's transform_tolerance
     double max_step_lin = 0.30;    // m per scan before a step is held
     double max_step_ang = 0.175;   // rad (~10 deg) per scan before a step is held
     double max_hold = 2.0;         // s of held steps before the new value is adopted
+    // s the gate status stays ERROR after a forced adopt. Must outlast the
+    // watchdog's lost_duration or a one-shot step never trips it; 0 = no ERROR.
+    double error_latch = 6.0;
 };
 
 inline Eigen::Isometry3d to_iso(const geometry_msgs::msg::Transform &t)
@@ -120,12 +128,19 @@ public:
         // lock itself is right is the overlap health check's job.
         last_ = T;
         holding_ = false;
+        last_adopt_s_ = now_s;
         return ADOPT;
     }
 
     const Eigen::Isometry3d &last() const { return last_; }
     double step_lin() const { return step_lin_; }
     double step_ang() const { return step_ang_; }
+    // For the diagnostic status. last_adopt_s_ survives reset(): a deliberate
+    // move does not un-happen an earlier forced adopt.
+    bool holding() const { return holding_; }
+    double last_adopt_s() const { return last_adopt_s_; }
+    long misses() const { return misses_; }
+    void count_miss() { ++misses_; }
 
 private:
     Eigen::Isometry3d last_ = Eigen::Isometry3d::Identity();
@@ -134,6 +149,8 @@ private:
     double hold_since_ = 0.0;
     double step_lin_ = 0.0;
     double step_ang_ = 0.0;
+    double last_adopt_s_ = -1e30;
+    long   misses_ = 0;
 };
 
 // Broadcast map -> odom for a filter pose given as map -> child (the same
@@ -159,6 +176,7 @@ inline bool publish(const geometry_msgs::msg::TransformStamped &map_child,
             "Is wheel_odom_tf running?",
             p.odom_frame.c_str(), map_child.child_frame_id.c_str(), ex.what(),
             map_child.header.frame_id.c_str(), p.odom_frame.c_str());
+        gate.count_miss();
         return false;
     }
 
@@ -196,6 +214,52 @@ inline bool publish(const geometry_msgs::msg::TransformStamped &map_child,
     out.transform = to_msg(gate.last());
     br.sendTransform(out);
     return true;
+}
+
+// The gate as a /diagnostics status, so a watchdog can act on it rather than
+// the steps only reaching the log. ERROR is LATCHED for p.error_latch after a
+// forced adopt: an adopt is a one-shot event, and a status that returns to OK
+// on the next scan never outlasts a watchdog's sustained-badness window.
+inline diagnostic_msgs::msg::DiagnosticStatus gate_status(
+    const Gate &gate, double now_s, const Params &p,
+    const std::string &name, const std::string &hardware_id)
+{
+    diagnostic_msgs::msg::DiagnosticStatus st;
+    st.name = name;
+    st.hardware_id = hardware_id;
+
+    const double since_adopt = now_s - gate.last_adopt_s();
+    char buf[256];
+    if (p.error_latch > 0.0 && since_adopt <= p.error_latch) {
+        st.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+        snprintf(buf, sizeof(buf),
+                 "adopted a %.2f m / %.1f deg step %.1f s ago; the pose moved "
+                 "under the planner", gate.step_lin(),
+                 gate.step_ang() * 180.0 / M_PI, since_adopt);
+    } else if (gate.holding()) {
+        st.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+        snprintf(buf, sizeof(buf),
+                 "holding a %.2f m / %.1f deg step; riding on wheel odometry",
+                 gate.step_lin(), gate.step_ang() * 180.0 / M_PI);
+    } else {
+        st.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+        snprintf(buf, sizeof(buf), "ok; last step %.3f m / %.2f deg",
+                 gate.step_lin(), gate.step_ang() * 180.0 / M_PI);
+    }
+    st.message = buf;
+
+    const auto kv = [&st](const char *k, const std::string &v) {
+        diagnostic_msgs::msg::KeyValue e;
+        e.key = k;
+        e.value = v;
+        st.values.push_back(e);
+    };
+    kv("step_lin_m", std::to_string(gate.step_lin()));
+    kv("step_ang_deg", std::to_string(gate.step_ang() * 180.0 / M_PI));
+    // Lookup failures: a rising count means odom -> base is late or absent,
+    // which is also what a too-short lookup_timeout looks like.
+    kv("odom_misses", std::to_string(gate.misses()));
+    return st;
 }
 
 }  // namespace map_odom

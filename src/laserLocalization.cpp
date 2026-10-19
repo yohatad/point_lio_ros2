@@ -392,10 +392,17 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
         nav_msgs::msg::Odometry loc;
         loc.header = odomAftMapped.header;
         loc.child_frame_id = tf_child_frame;
-        loc.pose.pose.position.x = transform.transform.translation.x;
-        loc.pose.pose.position.y = transform.transform.translation.y;
-        loc.pose.pose.position.z = transform.transform.translation.z;
-        loc.pose.pose.orientation = transform.transform.rotation;
+        // In odom mode TF carries the FLATTENED pose (roll/pitch dropped, since
+        // planar wheel odometry cannot represent them). Flatten here too, or the
+        // topic and the tree disagree on attitude for the same edge.
+        geometry_msgs::msg::Transform pose_tf = transform.transform;
+        if (!map_odom_params.odom_frame.empty() && map_odom_params.planar) {
+            pose_tf = map_odom::to_msg(map_odom::flatten(map_odom::to_iso(pose_tf)));
+        }
+        loc.pose.pose.position.x = pose_tf.translation.x;
+        loc.pose.pose.position.y = pose_tf.translation.y;
+        loc.pose.pose.position.z = pose_tf.translation.z;
+        loc.pose.pose.orientation = pose_tf.rotation;
         loc.pose.covariance = odomAftMapped.pose.covariance;
 
         // Twist is expressed in child_frame_id, so rotating alone is not

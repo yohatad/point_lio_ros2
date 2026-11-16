@@ -157,7 +157,7 @@ def generate_launch_description():
         # pepper_slam's configuration file first; the values below override it.
         parameters=[PathJoinSubstitution([
             FindPackageShare('pepper_slam'), 'config',
-            'lio_odom_bridge_configuration.yaml']), {
+            'pepper_slam_configuration.yaml']), {
             'odom_topic': '/odom_lio',
             # MUST match publish.body_frame in the selected config:
             # l2lidar_node.yaml -> l2lidar_frame_imu (the default),

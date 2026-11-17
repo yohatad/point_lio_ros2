@@ -123,7 +123,7 @@ def generate_launch_description():
             # unconditional, no publish_tf-style disable flag) would then
             # fight the static l2lidar_frame -> l2lidar_frame_imu transform for a
             # parent. Left at its "aft_mapped" default (unclaimed frame,
-            # harmless orphan branch) -- lio_odom_bridge.py below does
+            # harmless orphan branch) -- lio_odom_bridge below does
             # the real odom -> base_footprint republish instead.
             'odom_header_frame_id': 'lio_init',
             'use_sim_time': LaunchConfiguration('use_sim_time'),
@@ -147,14 +147,17 @@ def generate_launch_description():
 
     # Republishes Point-LIO's odometry (odom -> aft_mapped, i.e. odom -> l2lidar_frame_imu
     # in physical terms) as odom -> base_footprint, reusing the same bridge
-    # FAST-LIO uses -- see pepper_slam/scripts/lio_odom_bridge.py for the
+    # FAST-LIO uses -- see pepper_slam/src/lio_odom_bridge.cpp for the
     # full explanation of why this indirection exists.
     odom_bridge_node = Node(
         package='pepper_slam',
-        executable='lio_odom_bridge.py',
+        executable='lio_odom_bridge',
         name='lio_odom_bridge',
         output='screen',
-        parameters=[{
+        # pepper_slam's configuration file first; the values below override it.
+        parameters=[PathJoinSubstitution([
+            FindPackageShare('pepper_slam'), 'config',
+            'pepper_slam_configuration.yaml']), {
             'odom_topic': '/odom_lio',
             # MUST match publish.body_frame in the selected config:
             # l2lidar_node.yaml -> l2lidar_frame_imu (the default),

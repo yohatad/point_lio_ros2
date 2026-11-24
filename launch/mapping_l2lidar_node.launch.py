@@ -1,37 +1,13 @@
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import GroupAction, DeclareLaunchArgument, OpaqueFunction
+from launch.actions import GroupAction, DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
-
-
-# publish.body_frame is a PROPERTY OF THE CONFIG, not an independent choice:
-# l2lidar_node.yaml estimates the L2's IMU, l2lidar_rsimu.yaml the RealSense's.
-# lio_odom_bridge uses it to close odom -> base_footprint and a mismatch is
-# silent, so derive it and let an explicit value override for other configs.
-_BODY_FRAME_BY_CONFIG = {
-    'l2lidar_node.yaml': 'l2lidar_frame_imu',
-    'l2lidar_rsimu.yaml': 'camera_imu_optical_frame',
-}
-
-
-def _resolve_lidar_imu_frame(context, *args, **kwargs):
-    import os
-    from launch.actions import SetLaunchConfiguration
-    explicit = LaunchConfiguration('lidar_imu_frame').perform(context)
-    if explicit:
-        return [SetLaunchConfiguration('resolved_lidar_imu_frame', explicit)]
-    cfg = os.path.basename(LaunchConfiguration('config_file').perform(context))
-    frame = _BODY_FRAME_BY_CONFIG.get(cfg)
-    if frame is None:
-        raise RuntimeError(
-            f"config_file '{cfg}' is not in mapping_l2lidar_node.launch.py's "
-            f"body-frame table {sorted(_BODY_FRAME_BY_CONFIG)}, so "
-            f"lidar_imu_frame cannot be derived. Pass it explicitly -- it must "
-            f"match the config's publish.body_frame or lio_odom_bridge "
-            f"closes odom -> base_footprint through the wrong frame.")
-    return [SetLaunchConfiguration('resolved_lidar_imu_frame', frame)]
 
 
 def generate_launch_description():
@@ -41,17 +17,6 @@ def generate_launch_description():
         description='Config under point_lio/config. l2lidar_node.yaml uses the '
                     "L2's own IMU; l2lidar_rsimu.yaml uses the RealSense's "
                     '(/camera/imu) -- see utils/L2_IMU/REPORT.md for why.'
-    )
-    # DERIVED from config_file when empty -- see _resolve_lidar_imu_frame. It
-    # used to default to l2lidar_frame_imu unconditionally, which made switching
-    # IMU a TWO-argument change: pass config_file alone and the bridge closes
-    # odom -> base_footprint through the wrong static frame, silently, because
-    # the tree still resolves.
-    lidar_imu_frame_arg = DeclareLaunchArgument(
-        'lidar_imu_frame', default_value='camera_imu_optical_frame',
-        description='Override the static frame matching the config\'s '
-                    'publish.body_frame. Empty (default) derives it from '
-                    'config_file.'
     )
     rviz_arg = DeclareLaunchArgument(
         'rviz', default_value='true',
@@ -71,30 +36,6 @@ def generate_launch_description():
                     'robot. Reaches laserMapping and the odom bridge below -- '
                     'without it they run on wall time while the rest of the '
                     'stack runs on the bag clock.')
-
-    flatten_base_frame_arg = DeclareLaunchArgument(
-        'flatten_base_frame', default_value='false',
-        description='Zero the leveled z/roll/pitch of odom -> base_footprint '
-                    'every cycle (keep x, y, yaw) -- a hard flat-floor '
-                    'assumption, not a sensor-fused correction. Off by '
-                    'default: only correct on robots that are always on '
-                    'genuinely flat floor.'
-    )
-    level_frame_as_child_arg = DeclareLaunchArgument(
-        'level_frame_as_child', default_value='false',
-        description='Publish the leveling transform as lio_init -> odom '
-                    '(child) instead of odom -> lio_init (parent). Use with '
-                    'bridge_level_frame:=true when a localizer already owns '
-                    'map -> odom, so odom still exists without giving '
-                    'odom two parents.'
-    )
-    bridge_level_frame_arg = DeclareLaunchArgument(
-        'bridge_level_frame', default_value='true',
-        description='Have lio_odom_bridge publish the static odom -> '
-                    'odom leveling frame. Set false when a higher layer owns '
-                    'odom (e.g. PGO publishing map -> odom), so odom does not '
-                    'end up with two parents (odom AND map).'
-    )
 
     # Node parameters, including those from the YAML configuration file
     laser_mapping_params = [
@@ -145,32 +86,27 @@ def generate_launch_description():
         # prefix='gdb -ex run --args'
     )
 
-    # Republishes Point-LIO's odometry (odom -> aft_mapped, i.e. odom -> l2lidar_frame_imu
-    # in physical terms) as odom -> base_footprint, reusing the same bridge
-    # FAST-LIO uses -- see pepper_slam/src/lio_odom_bridge.cpp for the
-    # full explanation of why this indirection exists.
-    odom_bridge_node = Node(
-        package='pepper_slam',
-        executable='lio_odom_bridge',
-        name='lio_odom_bridge',
-        output='screen',
-        # pepper_slam's configuration file first; the values below override it.
-        parameters=[PathJoinSubstitution([
-            FindPackageShare('pepper_slam'), 'config',
-            'pepper_slam_configuration.yaml']), {
-            'odom_topic': '/odom_lio',
-            # MUST match publish.body_frame in the selected config:
-            # l2lidar_node.yaml -> l2lidar_frame_imu (the default),
-            # l2lidar_rsimu.yaml -> camera_imu_optical_frame.
-            # A mismatch silently yields a wrong odom -> base_footprint.
-            'lidar_imu_frame': LaunchConfiguration('resolved_lidar_imu_frame'),
-            'flatten_base_frame': LaunchConfiguration('flatten_base_frame'),
-            'publish_level_frame': LaunchConfiguration('bridge_level_frame'),
-            'level_frame_as_child': LaunchConfiguration('level_frame_as_child'),
+    # Republishes Point-LIO's odometry (lio_init -> <body frame>) as
+    # odom -> base_footprint through pepper_slam's lio_odom_bridge.launch.py,
+    # the same include FAST-LIO's callers use, so both estimators get one
+    # bridge setup: parameters from pepper_slam_configuration.yaml, the body
+    # frame from lidar_imu_frame (default camera_imu_optical_frame, the frame
+    # l2lidar_rsimu.yaml names -- an L2-IMU run with l2lidar_node.yaml must
+    # pass lidar_imu_frame:=l2lidar_frame_imu, as with FAST-LIO), and the
+    # overrides it declares (flatten_base_frame, bridge_level_frame,
+    # level_frame_as_child, ...) taken from the caller when set and from the
+    # configuration file otherwise.
+    odom_bridge_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(
+            get_package_share_directory('pepper_slam'),
+            'launch', 'lio_odom_bridge.launch.py')),
+        launch_arguments={
             'use_sim_time': LaunchConfiguration('use_sim_time'),
-        }],
+            'config_path': PathJoinSubstitution([
+                FindPackageShare('point_lio'), 'config']),
+            'config_file': LaunchConfiguration('config_file'),
+        }.items(),
     )
-
     # Conditional RViz node launch
     rviz_node = Node(
         package='rviz2',
@@ -185,17 +121,11 @@ def generate_launch_description():
     # Assemble the launch description
     ld = LaunchDescription([
         config_file_arg,
-        lidar_imu_frame_arg,
-        # AFTER the declares above: the resolver reads both of them.
-        OpaqueFunction(function=_resolve_lidar_imu_frame),
         rviz_arg,
         rviz_cfg_arg,
         use_sim_time_arg,
-        flatten_base_frame_arg,
-        level_frame_as_child_arg,
-        bridge_level_frame_arg,
         laser_mapping_node,
-        odom_bridge_node,
+        odom_bridge_launch,
         GroupAction(
             actions=[rviz_node],
             condition=IfCondition(LaunchConfiguration('rviz'))
